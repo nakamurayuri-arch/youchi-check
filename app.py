@@ -234,21 +234,51 @@ def _hit_in_shps(shps, lat, lon):
                 return {"attrs": dict(zip(fields, list(sr.record))), "file": shp.split("/")[-1]}
     return None
 
+def _diag_shps(shps, lat, lon):
+    """SHPを読み、件数・全体bbox・点がbbox内か等の診断を返す。"""
+    import shapefile
+    total = 0; inbbox = 0
+    gxmin = gymin = 1e18; gxmax = gymax = -1e18
+    sample_fields = []
+    for shp in shps:
+        try:
+            r = shapefile.Reader(shp, encoding="cp932")
+        except Exception:
+            r = shapefile.Reader(shp)
+        sample_fields = [f[0] for f in r.fields[1:]]
+        b = r.bbox  # [xmin,ymin,xmax,ymax]
+        gxmin = min(gxmin, b[0]); gymin = min(gymin, b[1])
+        gxmax = max(gxmax, b[2]); gymax = max(gymax, b[3])
+        for sh in r.iterShapes():
+            total += 1
+            bb = sh.bbox
+            if bb[0] <= lon <= bb[2] and bb[1] <= lat <= bb[3]:
+                inbbox += 1
+    return {"files": [s.split("/")[-1] for s in shps], "polygons": total,
+            "data_bbox": [round(gxmin,4), round(gymin,4), round(gxmax,4), round(gymax,4)],
+            "point": [round(lon,6), round(lat,6)],
+            "point_in_data_bbox": (gxmin <= lon <= gxmax and gymin <= lat <= gymax),
+            "bbox_hit_polygons": inbbox, "fields": sample_fields}
+
 def a12_status(lat, lon, addr):
     cands = _pref_candidates(lat, lon, addr)
     if not cands:
         return {"err": "都道府県を特定できず"}
-    tried = []
+    tried = []; diag = None
     for code, pname in cands:
         try:
             shps = download_a12(code)
         except Exception as e:
-            tried.append(f"{pname}:取得失敗({e})"); continue
+            tried.append(f"{pname}(コード{code}):取得失敗 {e}"); continue
+        if diag is None:
+            try:
+                diag = {"pref": pname, "code": code, **_diag_shps(shps, lat, lon)}
+            except Exception as e:
+                tried.append(f"{pname}:読取失敗 {e}")
         hit = _hit_in_shps(shps, lat, lon)
         if hit:
-            return {"hit": True, "pref": pname, "file": hit["file"], "attrs": hit["attrs"]}
-    # どの候補県にも当たらなかった → 最初の候補県名で「農業地域外」
-    return {"hit": False, "pref": cands[0][1], "note": ("／".join(tried) if tried else "")}
+            return {"hit": True, "pref": pname, "file": hit["file"], "attrs": hit["attrs"], "diag": diag}
+    return {"hit": False, "pref": cands[0][1], "note": ("／".join(tried) if tried else ""), "diag": diag}
 
 OVP = "https://overpass-api.de/api/interpreter"
 ROADCLS = {"trunk": "国道相当", "primary": "国道/主要地方道", "secondary": "県道相当",
@@ -392,10 +422,14 @@ if st.button("▶ チェックする", type="primary"):
         st.write(f"- 青地/白地： 取得エラー（{a12['err']}）")
     elif a12.get("hit"):
         st.write(f"- 青地/白地： **⚠ 農業地域/農用地区域に該当（青地の可能性）**（判定に使った県：{a12.get('pref','')}）")
-        with st.expander("A12の属性（青地/白地の確定用・要確認）"):
+        with st.expander("A12の属性（青地/白地の確定用）"):
             st.json({"pref": a12.get("pref"), "file": a12.get("file"), "attrs": a12.get("attrs")})
     else:
         st.write(f"- 青地/白地： **○ 農業地域外（白地/非農地の可能性）**（{a12.get('pref','')}）")
+        if a12.get("note"):
+            st.warning(f"データ取得の注意: {a12['note']}")
+    with st.expander("A12 判定の診断（うまくいっているかの確認用）"):
+        st.json(a12.get("diag") or {"注意": "診断情報なし（データ取得に失敗した可能性）"})
     st.caption("※A12は2015年度データ。第何種農地は農業委員会確認。地目は登記簿確認。")
 
     st.subheader("その他（データ無し→リンク確認）")
