@@ -113,6 +113,7 @@ def classify_color(rgb, palette):
     return best
 
 def hazard(lat, lon, z=16):
+    """タイルで該当/非該当のみ判定（色→深さ推定は廃止。深さは洪水のみXKT026で正確取得）。"""
     from PIL import Image
     xf, yf = deg2tile(lat, lon, z); xt, yt = int(xf), int(yf)
     out = {}
@@ -120,19 +121,78 @@ def hazard(lat, lon, z=16):
         try:
             r = requests.get(tmpl.format(z=z, x=xt, y=yt), headers=UA, timeout=T)
             if r.status_code != 200:
-                out[name] = {"hit": False}; continue
+                out[name] = False; continue
             img = Image.open(BytesIO(r.content)).convert("RGBA")
             px = min(255, int((xf-xt)*256)); py = min(255, int((yf-yt)*256))
             d = img.getpixel((px, py))
-            if d[3] > 0 and (d[0]+d[1]+d[2] > 0):
-                pal = DEPTH_LEGEND if name in DEPTH_LAYERS else DOSHA_LEGEND
-                out[name] = {"hit": True, "level": classify_color(d[:3], pal)}
-            else:
-                out[name] = {"hit": False}
+            out[name] = bool(d[3] > 0 and (d[0]+d[1]+d[2] > 0))
         except Exception:
-            out[name] = {"hit": None}
+            out[name] = None
         time.sleep(0.1)
     return out
+
+# 洪水浸水深ランク（国土数値情報A31 / reinfolib XKT026 の A31a_205）
+FLOOD_RANK = {1:"0〜0.5m未満",2:"0.5〜1m未満",3:"1〜2m未満",4:"2〜3m未満",
+              5:"3〜4m未満",6:"4〜5m未満",7:"5〜10m未満",8:"10〜20m未満",9:"20m以上"}
+
+def reinfolib_flood(lat, lon, z=15):
+    """XKT026で洪水浸水深ランク(A31a_205)を取得。色ではなく属性値なので正確。"""
+    if not REINFOLIB_KEY:
+        return None
+    xf, yf = deg2tile(lat, lon, z); xt, yt = int(xf), int(yf)
+    url = f"https://www.reinfolib.mlit.go.jp/ex-api/external/XKT026?response_format=geojson&z={z}&x={xt}&y={yt}"
+    try:
+        r = requests.get(url, headers={**UA, "Ocp-Apim-Subscription-Key": REINFOLIB_KEY}, timeout=T)
+        if r.status_code in (204, 404):
+            return {"hit": False}
+        if r.status_code != 200:
+            return {"err": f"HTTP {r.status_code}"}
+        gj = r.json()
+    except Exception as e:
+        return {"err": str(e)}
+    ranks = []; river = None
+    for f in (gj.get("features", []) if isinstance(gj, dict) else []):
+        if point_in_geom(lon, lat, f.get("geometry", {})):
+            p = f.get("properties", {})
+            try:
+                ranks.append(int(p.get("A31a_205") or 0))
+            except Exception:
+                pass
+            river = river or p.get("A31a_202")
+    if not ranks:
+        return {"hit": False}
+    mr = max(ranks)
+    return {"hit": True, "rank": mr, "depth": FLOOD_RANK.get(mr, "不明"), "river": river}
+
+def reinfolib_inundation(endpoint, lat, lon, z=14):
+    """XKT027(高潮)/XKT028(津波)：浸水深は文字列区分。属性から深さ文字列を拾い最深を返す。"""
+    if not REINFOLIB_KEY:
+        return None
+    xf, yf = deg2tile(lat, lon, z); xt, yt = int(xf), int(yf)
+    url = f"https://www.reinfolib.mlit.go.jp/ex-api/external/{endpoint}?response_format=geojson&z={z}&x={xt}&y={yt}"
+    try:
+        r = requests.get(url, headers={**UA, "Ocp-Apim-Subscription-Key": REINFOLIB_KEY}, timeout=T)
+        if r.status_code in (204, 404):
+            return {"hit": False}
+        if r.status_code != 200:
+            return {"err": f"HTTP {r.status_code}"}
+        gj = r.json()
+    except Exception as e:
+        return {"err": str(e)}
+    hit_any = False; depths = []
+    for f in (gj.get("features", []) if isinstance(gj, dict) else []):
+        if point_in_geom(lon, lat, f.get("geometry", {})):
+            hit_any = True
+            for v in (f.get("properties", {}) or {}).values():
+                if isinstance(v, str) and re.search(r"\d", v) and "m" in v and ("以上" in v or "未満" in v or "以下" in v):
+                    depths.append(v)
+    if not hit_any:
+        return {"hit": False}
+    if depths:
+        def _dk(s):
+            n = re.findall(r"\d+(?:\.\d+)?", s); return float(n[0]) if n else 0.0
+        return {"hit": True, "depth": max(depths, key=_dk)}
+    return {"hit": True, "depth": None}
 
 REINFOLIB = [
     ("市街化区域/調整区域", "XKT001", ["kubun_id", "kubun", "区域区分"]),
@@ -432,14 +492,48 @@ if st.button("▶ チェックする", type="primary"):
               "標高": f"{elev} m" if elev is not None else "取得できず",
               "傾斜(推定)": f"{slp}°" if slp is not None else "取得できず"})
 
-    st.subheader("ハザード（該当時は浸水深/区分も表示・凡例推定）")
+    st.subheader("ハザード")
+    fl  = reinfolib_flood(lat, lon) if REINFOLIB_KEY else None
+    tsu = reinfolib_inundation("XKT028", lat, lon, z=14) if REINFOLIB_KEY else None
+    hig = reinfolib_inundation("XKT027", lat, lon, z=14) if REINFOLIB_KEY else None
+
+    def _line_flood(k):
+        if isinstance(fl, dict) and not fl.get("err"):
+            if fl.get("hit"):
+                rv = f"（{fl.get('river','')}）" if fl.get("river") else ""
+                return f"- {k}： **⚠ 該当（{fl.get('depth','')}）**{rv} 〈XKT026〉"
+            return f"- {k}： **○ 非該当** 〈XKT026〉"
+        return None
+
+    def _line_str(k, res, ep):
+        if isinstance(res, dict) and not res.get("err"):
+            if res.get("hit"):
+                d = f"（{res['depth']}）" if res.get("depth") else "（深さ区分の記載なし）"
+                return f"- {k}： **⚠ 該当{d}** 〈{ep}〉"
+            return f"- {k}： **○ 非該当** 〈{ep}〉"
+        return None
+
     for k, v in haz.items():
-        if v.get("hit") is True:
-            st.write(f"- {k}： **⚠ 該当（{v.get('level','')}）**")
-        elif v.get("hit") is False:
+        line = None
+        if k.startswith("洪水"):
+            line = _line_flood(k)
+        elif k.startswith("津波"):
+            line = _line_str(k, tsu, "XKT028")
+        elif k.startswith("高潮"):
+            line = _line_str(k, hig, "XKT027")
+        if line:
+            st.write(line); continue
+        # フォールバック（キー無し等）：タイルの該当/非該当のみ
+        if v is True:
+            extra = "（深さは公式マップで確認）" if k.startswith(("洪水", "津波", "高潮")) else ""
+            st.write(f"- {k}： **⚠ 該当**{extra}")
+        elif v is False:
             st.write(f"- {k}： **○ 非該当**")
         else:
             st.write(f"- {k}： 要確認")
+    for nm, res in [("洪水", fl), ("津波", tsu), ("高潮", hig)]:
+        if isinstance(res, dict) and res.get("err"):
+            st.caption(f"（{nm}の属性取得でエラー: {res['err']}。タイル判定にフォールバック）")
 
     st.subheader("許認可・区域")
     if REINFOLIB_KEY:
@@ -494,4 +588,6 @@ if st.button("▶ チェックする", type="primary"):
         f"- 埋蔵文化財包蔵地： [文化財総覧WebGIS](https://heritagemap.nabunken.go.jp/)（全国統一の可否データ無し・自治体教委）\n"
         f"- 位置： [Googleマップ](https://www.google.com/maps?q={lat},{lon})"
     )
-    st.info("公開データからの一次確認です。ハザードの深さ/区分は凡例色からの推定。最終確定は各自治体・現地・公式マップで。")
+    st.info("公開データからの一次確認です。最終確定は各自治体・現地・公式マップで。")
+    if REINFOLIB_KEY:
+        st.caption("このサービスは、国土交通省不動産情報ライブラリのAPI機能を使用していますが、提供情報の最新性、正確性、完全性等が保証されたものではありません。")
