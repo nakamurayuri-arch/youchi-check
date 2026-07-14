@@ -215,6 +215,19 @@ def _pref_candidates(lat, lon, addr):
                 cands.append((nb, nm[0]))
     return cands
 
+def _rings_from_shape(shape):
+    pts = shape.points
+    parts = list(shape.parts) + [len(pts)]
+    return [pts[parts[i]:parts[i+1]] for i in range(len(parts)-1)]
+
+def _point_in_rings(lon, lat, rings):
+    # even-odd rule：内包するリング数が奇数なら内部（外周/穴を自動処理）
+    cnt = 0
+    for ring in rings:
+        if len(ring) >= 3 and _pip_ring(lon, lat, ring):
+            cnt += 1
+    return (cnt % 2) == 1
+
 def _hit_in_shps(shps, lat, lon):
     import shapefile
     for shp in shps:
@@ -227,10 +240,7 @@ def _hit_in_shps(shps, lat, lon):
             bb = sr.shape.bbox
             if not (bb[0] <= lon <= bb[2] and bb[1] <= lat <= bb[3]):
                 continue
-            pts = sr.shape.points
-            parts = list(sr.shape.parts) + [len(pts)]
-            rings = [pts[parts[i]:parts[i+1]] for i in range(len(parts)-1)]
-            if rings and _pip_ring(lon, lat, rings[0]) and not any(_pip_ring(lon, lat, h) for h in rings[1:]):
+            if _point_in_rings(lon, lat, _rings_from_shape(sr.shape)):
                 return {"attrs": dict(zip(fields, list(sr.record))), "file": shp.split("/")[-1]}
     return None
 
@@ -316,7 +326,18 @@ def coast_dist(lat, lon):
     return round(dmin) if dmin < 1e12 else None
 
 def geocode(addr):
-    """住所→(lat, lon, 表示住所)。Nominatimでジオコーディング。"""
+    """住所→(lat, lon, 表示住所)。国土地理院→Nominatimの順で試す（日本の番地に強い）。"""
+    # 1) 国土地理院 住所検索（日本の住所・番地に強い）
+    try:
+        js = requests.get("https://msearch.gsi.go.jp/address-search/AddressSearch",
+                          params={"q": addr}, headers=UA, timeout=T).json()
+        if js:
+            lon, lat = js[0]["geometry"]["coordinates"]
+            title = js[0].get("properties", {}).get("title", addr)
+            return float(lat), float(lon), title
+    except Exception:
+        pass
+    # 2) Nominatim（バックアップ）
     try:
         js = requests.get("https://nominatim.openstreetmap.org/search",
                           params={"q": addr, "format": "json", "limit": 1, "accept-language": "ja",
@@ -421,9 +442,11 @@ if st.button("▶ チェックする", type="primary"):
     if a12.get("err"):
         st.write(f"- 青地/白地： 取得エラー（{a12['err']}）")
     elif a12.get("hit"):
-        st.write(f"- 青地/白地： **⚠ 農業地域/農用地区域に該当（青地の可能性）**（判定に使った県：{a12.get('pref','')}）")
+        at = a12.get("attrs", {})
+        kubun = at.get("OBJ_NAME") or at.get("IOSIDE_DIV") or "農業地域"
+        st.write(f"- 青地/白地： **⚠ 該当：{kubun}**（判定に使った県：{a12.get('pref','')}）")
         with st.expander("A12の属性（青地/白地の確定用）"):
-            st.json({"pref": a12.get("pref"), "file": a12.get("file"), "attrs": a12.get("attrs")})
+            st.json({"pref": a12.get("pref"), "file": a12.get("file"), "attrs": at})
     else:
         st.write(f"- 青地/白地： **○ 農業地域外（白地/非農地の可能性）**（{a12.get('pref','')}）")
         if a12.get("note"):
