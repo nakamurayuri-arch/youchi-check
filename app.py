@@ -270,6 +270,31 @@ def _diag_shps(shps, lat, lon):
             "point_in_data_bbox": (gxmin <= lon <= gxmax and gymin <= lat <= gymax),
             "bbox_hit_polygons": inbbox, "fields": sample_fields}
 
+def _a12_layers_hit(shps, lat, lon):
+    """点を含むポリゴンの LAYER_NO 集合（6=農用地区域/5=農業地域）と代表属性を返す。"""
+    import shapefile
+    layers = set(); sample = None; sfile = None
+    for shp in shps:
+        try:
+            r = shapefile.Reader(shp, encoding="cp932")
+        except Exception:
+            r = shapefile.Reader(shp)
+        fields = [f[0] for f in r.fields[1:]]
+        li = fields.index("LAYER_NO") if "LAYER_NO" in fields else None
+        for sr in r.iterShapeRecords():
+            bb = sr.shape.bbox
+            if not (bb[0] <= lon <= bb[2] and bb[1] <= lat <= bb[3]):
+                continue
+            if _point_in_rings(lon, lat, _rings_from_shape(sr.shape)):
+                ln = None
+                if li is not None:
+                    try: ln = int(sr.record[li])
+                    except Exception: ln = sr.record[li]
+                layers.add(ln)
+                if sample is None:
+                    sample = dict(zip(fields, list(sr.record))); sfile = shp.split("/")[-1]
+    return layers, sample, sfile
+
 def a12_status(lat, lon, addr):
     cands = _pref_candidates(lat, lon, addr)
     if not cands:
@@ -283,12 +308,14 @@ def a12_status(lat, lon, addr):
         if diag is None:
             try:
                 diag = {"pref": pname, "code": code, **_diag_shps(shps, lat, lon)}
-            except Exception as e:
-                tried.append(f"{pname}:読取失敗 {e}")
-        hit = _hit_in_shps(shps, lat, lon)
-        if hit:
-            return {"hit": True, "pref": pname, "file": hit["file"], "attrs": hit["attrs"], "diag": diag}
-    return {"hit": False, "pref": cands[0][1], "note": ("／".join(tried) if tried else ""), "diag": diag}
+            except Exception:
+                pass
+        layers, sample, sfile = _a12_layers_hit(shps, lat, lon)
+        if 6 in layers:
+            return {"status": "青地", "pref": pname, "attrs": sample, "file": sfile, "diag": diag}
+        if layers:  # 5（農業地域）にのみ該当
+            return {"status": "白地", "pref": pname, "attrs": sample, "file": sfile, "diag": diag}
+    return {"status": "非農地", "pref": cands[0][1], "note": "／".join(tried), "diag": diag}
 
 OVP = "https://overpass-api.de/api/interpreter"
 ROADCLS = {"trunk": "国道相当", "primary": "国道/主要地方道", "secondary": "県道相当",
@@ -440,20 +467,25 @@ if st.button("▶ チェックする", type="primary"):
     except Exception as e:
         a12 = {"err": str(e)}
     if a12.get("err"):
-        st.write(f"- 青地/白地： 取得エラー（{a12['err']}）")
-    elif a12.get("hit"):
-        at = a12.get("attrs", {})
-        kubun = at.get("OBJ_NAME") or at.get("IOSIDE_DIV") or "農業地域"
-        st.write(f"- 青地/白地： **⚠ 該当：{kubun}**（判定に使った県：{a12.get('pref','')}）")
-        with st.expander("A12の属性（青地/白地の確定用）"):
-            st.json({"pref": a12.get("pref"), "file": a12.get("file"), "attrs": at})
+        st.write(f"- 農地区分： 取得エラー（{a12['err']}）")
     else:
-        st.write(f"- 青地/白地： **○ 農業地域外（白地/非農地の可能性）**（{a12.get('pref','')}）")
+        stt = a12.get("status")
+        if stt == "青地":
+            st.write(f"- 農地区分： **⚠ 青地（農用地区域内）**（判定県：{a12.get('pref','')}）")
+            st.caption("→ 農地転用には原則、農振除外（農振法13条2）が先行して必要。")
+        elif stt == "白地":
+            st.write(f"- 農地区分： **△ 白地（農業地域内・農用地区域外）**（判定県：{a12.get('pref','')}）")
+            st.caption("→ 農地転用の対象（第何種は農業委員会確認）。")
+        else:
+            st.write(f"- 農地区分： **○ 非農地／農業地域外**（判定県：{a12.get('pref','')}）")
+        if a12.get("attrs"):
+            with st.expander("A12の属性（生データ）"):
+                st.json({"file": a12.get("file"), "attrs": a12.get("attrs")})
         if a12.get("note"):
             st.warning(f"データ取得の注意: {a12['note']}")
-    with st.expander("A12 判定の診断（うまくいっているかの確認用）"):
-        st.json(a12.get("diag") or {"注意": "診断情報なし（データ取得に失敗した可能性）"})
-    st.caption("※A12は2015年度データ。第何種農地は農業委員会確認。地目は登記簿確認。")
+    with st.expander("A12 判定の診断"):
+        st.json(a12.get("diag") or {"注意": "診断情報なし"})
+    st.caption("※A12は2015年度データ。農用地区域（青地）は参考表示で精度保証なし。第何種は農業委員会、地目は登記簿で確認。")
 
     st.subheader("その他（データ無し→リンク確認）")
     st.markdown(
