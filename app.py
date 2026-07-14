@@ -308,18 +308,27 @@ def revgeo(lat, lon):
 if not REINFOLIB_KEY:
     st.warning("市街化調整・用途・自然公園・地すべり・急傾斜を自動判定するには、無料のreinfolib APIキーが必要です（申請 → Streamlitの Secrets に REINFOLIB_KEY を設定）。未設定の間はリンク表示になります。", icon="🔑")
 
-coord = st.text_input("住所 または 緯度経度", placeholder="例: 滋賀県野洲市堤…740-1  /  33.0598671, 131.9332333")
+addr_in = st.text_input("住所（記録用。緯度経度が空のときはここから判定）",
+                        placeholder="例: 滋賀県野洲市堤字ノ爪740-1")
+coord = st.text_input("緯度経度（あればこちらを優先。正確）",
+                      placeholder="例: 33.0598671, 131.9332333")
 if st.button("▶ チェックする", type="primary"):
+    lat = lon = None
     c = parse_coord(coord)
     if c:
         lat, lon = c
-    else:
-        g = geocode(coord)
+        if addr_in.strip():
+            st.caption(f"判定は緯度経度を使用（住所『{addr_in.strip()}』は記録用）")
+    elif addr_in.strip():
+        g = geocode(addr_in.strip())
         if not g:
-            st.error("住所から場所を特定できませんでした。番地まで入れるか、緯度経度で入力してください。")
+            st.error("住所から場所を特定できませんでした。番地まで入れるか、緯度経度を入力してください。")
             st.stop()
         lat, lon, _ = g
         st.caption(f"住所を緯度経度に変換： {lat:.6f}, {lon:.6f}")
+    else:
+        st.error("住所か緯度経度のどちらかを入力してください。")
+        st.stop()
     with st.spinner("判定中…（10〜40秒）"):
         addr = revgeo(lat, lon)
         try: elev, slp = slope(lat, lon)
