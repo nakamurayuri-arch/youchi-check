@@ -69,6 +69,50 @@ def parse_one(s):
         return round(v, 7)
     return None
 
+import xml.etree.ElementTree as _ET
+
+def parse_kml(text):
+    """KML文字列 → [{'name','type':'polygon'|'point','coords':[(lon,lat),...]}]。名前空間非依存。"""
+    def local(tag): return tag.split('}')[-1]
+    def coords(t):
+        pts=[]
+        for tok in (t or '').replace('\n',' ').replace('\t',' ').split():
+            a=tok.split(',')
+            if len(a)>=2:
+                try: pts.append((float(a[0]), float(a[1])))
+                except Exception: pass
+        return pts
+    root=_ET.fromstring(text)
+    out=[]
+    for pm in root.iter():
+        if local(pm.tag)!='Placemark': continue
+        name=None
+        for ch in pm:
+            if local(ch.tag)=='name': name=(ch.text or '').strip()
+        poly_done=False
+        for poly in pm.iter():
+            if local(poly.tag)=='Polygon':
+                for c in poly.iter():
+                    if local(c.tag)=='coordinates' and c.text:
+                        p=coords(c.text)
+                        if p: out.append({'name':name,'type':'polygon','coords':p}); poly_done=True
+                        break
+                break
+        if not poly_done:
+            for pt in pm.iter():
+                if local(pt.tag)=='Point':
+                    for c in pt.iter():
+                        if local(c.tag)=='coordinates' and c.text:
+                            p=coords(c.text)
+                            if p: out.append({'name':name,'type':'point','coords':p})
+                            break
+    return out
+
+def kml_centroid(coords):
+    if not coords: return None
+    xs=[c[0] for c in coords]; ys=[c[1] for c in coords]
+    return (sum(ys)/len(ys), sum(xs)/len(xs))  # (lat, lon)
+
 def haversine(a, b, c, d):
     R = 6371000.0; r = math.radians
     h = math.sin(r(c-a)/2)**2 + math.cos(r(a))*math.cos(r(c))*math.sin(r(d-b)/2)**2
@@ -577,11 +621,27 @@ with _c1:
     lat_in = st.text_input("緯度", placeholder="例: 33.944370 / 33°56'39.7\"N")
 with _c2:
     lon_in = st.text_input("経度", placeholder="例: 130.807654 / 130°48'27.6\"E")
+kml_file = st.file_uploader("区画KML（任意・Googleマイマップ等から書き出し。区画があればその重心で判定＋地図に表示）",
+                            type=["kml"])
 if st.button("▶ チェックする", type="primary"):
-    lat = parse_one(lat_in)
-    lon = parse_one(lon_in)
+    kml_feats = []
+    if kml_file is not None:
+        try:
+            kml_feats = parse_kml(kml_file.getvalue().decode("utf-8", "ignore"))
+        except Exception as _ke:
+            st.warning(f"KMLの読取に失敗しました: {_ke}")
+    lat = lon = None
+    if kml_feats:
+        _tgt = next((f for f in kml_feats if f["type"] == "polygon"), kml_feats[0])
+        _cen = kml_centroid(_tgt["coords"])
+        if _cen:
+            lat, lon = _cen
+            st.caption(f"KMLの区画『{_tgt.get('name') or '無題'}』の重心で判定： {lat:.6f}, {lon:.6f}")
+    if lat is None or lon is None:
+        lat = parse_one(lat_in)
+        lon = parse_one(lon_in)
     if lat is not None and lon is not None:
-        if addr_in.strip():
+        if addr_in.strip() and not kml_feats:
             st.caption(f"判定は緯度経度を使用（住所『{addr_in.strip()}』は記録用）")
     elif addr_in.strip():
         g = geocode(addr_in.strip())
@@ -593,6 +653,24 @@ if st.button("▶ チェックする", type="primary"):
     else:
         st.error("住所か緯度経度のどちらかを入力してください。")
         st.stop()
+    if kml_feats:
+        try:
+            import pydeck as pdk
+            polys = [{"polygon": [[x, y] for (x, y) in f["coords"]], "name": f.get("name") or ""}
+                     for f in kml_feats if f["type"] == "polygon"]
+            layers = []
+            if polys:
+                layers.append(pdk.Layer("PolygonLayer", polys, get_polygon="polygon",
+                                        get_fill_color=[203, 15, 75, 50], get_line_color=[203, 15, 75],
+                                        line_width_min_pixels=2, pickable=True))
+            layers.append(pdk.Layer("ScatterplotLayer", [{"position": [lon, lat]}], get_position="position",
+                                    get_fill_color=[32, 55, 108], get_radius=15, radius_min_pixels=5))
+            st.subheader("区画マップ")
+            st.pydeck_chart(pdk.Deck(layers=layers, map_style=None,
+                            initial_view_state=pdk.ViewState(latitude=lat, longitude=lon, zoom=15),
+                            tooltip={"text": "{name}"}))
+        except Exception as _me:
+            st.caption(f"（区画マップの描画をスキップ: {_me}）")
     with st.spinner("判定中…（10〜40秒）"):
         addr = revgeo(lat, lon)
         try: elev, slp = slope(lat, lon)
