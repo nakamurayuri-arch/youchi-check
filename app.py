@@ -119,12 +119,11 @@ LEAFLET_TEMPLATE = """
 <!DOCTYPE html><html><head>
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-<style>#map{height:430px;border-radius:8px;}</style></head>
+<style>#map{height:460px;border-radius:8px;}</style></head>
 <body><div id="map"></div><script>
-var lat=__LAT__, lon=__LON__, zoom=__ZOOM__, poly=__POLY__;
+var lat=__LAT__, lon=__LON__, zoom=__ZOOM__, poly=__POLY__, zoning=__ZONING__, farm=__FARM__;
 var map=L.map('map').setView([lat,lon],zoom);
-var base=L.tileLayer('https://cyberjapandata.gsi.go.jp/xyz/pale/{z}/{x}/{y}.png',
-  {attribution:'国土地理院',maxZoom:18}).addTo(map);
+L.tileLayer('https://cyberjapandata.gsi.go.jp/xyz/pale/{z}/{x}/{y}.png',{attribution:'国土地理院',maxZoom:18}).addTo(map);
 function hz(u){return L.tileLayer('https://disaportaldata.gsi.go.jp/raster/'+u+'/{z}/{x}/{y}.png',{opacity:0.6,maxZoom:17});}
 var ov={
  '洪水(想定最大規模)':hz('01_flood_l2_shinsuishin'),
@@ -135,21 +134,91 @@ var ov={
  '土砂(地すべり)':hz('05_jisuberikeikaikuiki_data')
 };
 ov['洪水(想定最大規模)'].addTo(map);
+if(zoning){
+  var zl=L.geoJSON(zoning,{style:function(f){
+    var c=(f.properties&&f.properties.area_classification_ja)||'';
+    var col=(c.indexOf('調整')>=0)?'#CB0F4B':((c.indexOf('市街化区域')>=0)?'#2E6D8A':'#999');
+    return {color:col,weight:1,fillOpacity:0.25};
+  },onEachFeature:function(f,l){var c=(f.properties&&f.properties.area_classification_ja)||'';l.bindPopup('区域区分: '+c);}});
+  ov['市街化区域区分(赤=調整/青=市街化)']=zl;
+}
+if(farm){
+  var fl=L.geoJSON(farm,{style:function(f){
+    var ln=(f.properties&&f.properties.LAYER_NO);
+    var col=(ln==6)?'#1F8A4C':'#C8A02E';
+    return {color:col,weight:1,fillOpacity:0.25};
+  },onEachFeature:function(f,l){var ln=(f.properties&&f.properties.LAYER_NO);l.bindPopup(ln==6?'農用地区域(青地)':'農業地域(白地含む)');}});
+  ov['農地 青地(緑)/白地(黄)']=fl;
+}
 L.control.layers(null,ov,{collapsed:false}).addTo(map);
 L.marker([lat,lon]).addTo(map);
-if(poly){L.polygon(poly,{color:'#CB0F4B',weight:2,fillOpacity:0.08}).addTo(map);}
+if(poly){L.polygon(poly,{color:'#20376C',weight:2,fillOpacity:0.05}).addTo(map);}
 </script></body></html>
 """
 
-def leaflet_hazard_html(lat, lon, poly_lonlat=None, zoom=16):
-    poly_js = "null"
-    if poly_lonlat:
-        poly_js = json.dumps([[y, x] for (x, y) in poly_lonlat])
+def leaflet_hazard_html(lat, lon, poly_lonlat=None, zoom=16, zoning=None, farm=None):
+    poly_js = json.dumps([[y, x] for (x, y) in poly_lonlat]) if poly_lonlat else "null"
     return (LEAFLET_TEMPLATE
             .replace("__LAT__", repr(float(lat)))
             .replace("__LON__", repr(float(lon)))
             .replace("__ZOOM__", str(int(zoom)))
-            .replace("__POLY__", poly_js))
+            .replace("__POLY__", poly_js)
+            .replace("__ZONING__", json.dumps(zoning) if zoning else "null")
+            .replace("__FARM__", json.dumps(farm) if farm else "null"))
+
+def reinfolib_geojson_around(endpoint, lat, lon, z=15, span=1):
+    """地点を含むタイル＋周辺(span)タイルのフィーチャを集めてFeatureCollection化。地図描画用。"""
+    if not REINFOLIB_KEY:
+        return {"type": "FeatureCollection", "features": []}
+    xf, yf = deg2tile(lat, lon, z); xc, yc = int(xf), int(yf)
+    feats = []
+    for dx in range(-span, span+1):
+        for dy in range(-span, span+1):
+            try:
+                for f in _reinfolib_tile(endpoint, xc+dx, yc+dy, z):
+                    g = f.get("geometry", {})
+                    if g.get("type") in ("Polygon", "MultiPolygon"):
+                        feats.append({"type": "Feature",
+                                      "properties": f.get("properties", {}),
+                                      "geometry": g})
+            except Exception:
+                pass
+    return {"type": "FeatureCollection", "features": feats}
+
+def a12_geojson_around(lat, lon, addr, dd=0.012):
+    """A12(青地/白地)を地点周辺(±dd度)だけGeoJSON化。LAYER_NO(6=青地,5=白地)をpropsに。"""
+    feats = []
+    for code, pname in _pref_candidates(lat, lon, addr):
+        try:
+            shps = download_a12(code)
+        except Exception:
+            continue
+        import shapefile
+        got = False
+        for shp in shps:
+            try:
+                r = shapefile.Reader(shp, encoding="cp932")
+            except Exception:
+                r = shapefile.Reader(shp)
+            fields = [f[0] for f in r.fields[1:]]
+            li = fields.index("LAYER_NO") if "LAYER_NO" in fields else None
+            for sr in r.iterShapeRecords():
+                bb = sr.shape.bbox
+                if bb[2] < lon-dd or bb[0] > lon+dd or bb[3] < lat-dd or bb[1] > lat+dd:
+                    continue
+                try:
+                    geom = sr.shape.__geo_interface__
+                except Exception:
+                    continue
+                ln = None
+                if li is not None:
+                    try: ln = int(sr.record[li])
+                    except Exception: ln = sr.record[li]
+                feats.append({"type": "Feature", "geometry": geom, "properties": {"LAYER_NO": ln}})
+                got = True
+        if got:
+            break
+    return {"type": "FeatureCollection", "features": feats}
 
 def sample_points(coords, grid=3):
     """区画ポリゴン(coords=[(lon,lat)]) → 頂点+辺中点+重心+内部グリッド点。"""
@@ -851,9 +920,15 @@ if st.button("▶ チェックする", type="primary"):
         _pf = next((f for f in kml_feats if f["type"] == "polygon"), None)
         if _pf:
             _poly_ll = _pf["coords"]
+    with st.spinner("地図レイヤ（区域区分・農地）を準備中…"):
+        _zoning = reinfolib_geojson_around("XKT001", lat, lon, z=15, span=1) if REINFOLIB_KEY else None
+        try:
+            _farm = a12_geojson_around(lat, lon, addr_in)
+        except Exception:
+            _farm = None
     try:
-        components.html(leaflet_hazard_html(lat, lon, _poly_ll, zoom=16), height=450)
-        st.caption("アプリ内地図（右上で洪水/津波/高潮/土砂を切替）。外部サイトを開かないため位置ずれは起きません。出典：ハザードマップポータルサイト／国土地理院。")
+        components.html(leaflet_hazard_html(lat, lon, _poly_ll, zoom=16, zoning=_zoning, farm=_farm), height=470)
+        st.caption("アプリ内地図（右上で 洪水/津波/高潮/土砂、市街化区域区分、農地 を切替）。外部サイトを開かないため位置ずれは起きません。出典：ハザードマップポータルサイト／国土地理院、不動産情報ライブラリ、国土数値情報A12。")
     except Exception as _le:
         st.caption(f"（地図の埋め込みをスキップ: {_le}）")
     fl  = reinfolib_flood(lat, lon) if REINFOLIB_KEY else None
