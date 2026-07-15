@@ -411,13 +411,80 @@ def nearest_road(lat, lon):
             best = c
     return best
 
-def nearest_building(lat, lon):
+def _osm_building(lat, lon):
     js = ovp(f"[out:json][timeout:40];way(around:400,{lat},{lon})[building];out geom;")
     dmin = 1e12
     for e in js.get("elements", []):
         for p in e.get("geometry", []):
             dmin = min(dmin, haversine(lat, lon, p["lat"], p["lon"]))
     return round(dmin) if dmin < 1e12 else None
+
+def _extent_to_latlon(px, py, X, Y, Z, extent=4096, y_down=False):
+    fx = px/extent; fy = py/extent
+    gx = X + fx
+    gy = (Y + (1-fy)) if not y_down else (Y + fy)
+    n = 2**Z
+    lon = gx/n*360 - 180
+    lat = math.degrees(math.atan(math.sinh(math.pi*(1 - 2*gy/n))))
+    return lat, lon
+
+def _iter_rings(geom):
+    t = geom.get("type"); c = geom.get("coordinates")
+    if t == "Polygon":
+        for ring in c: yield ring
+    elif t == "MultiPolygon":
+        for poly in c:
+            for ring in poly: yield ring
+    elif t == "LineString":
+        yield c
+    elif t == "Point":
+        yield [c]
+
+def _gsi_building(lat, lon, z=16):
+    """国土地理院ベクトルタイル(建物)から最寄り建物距離。OSMの穴（工業地/埋立地/農村）を補う。"""
+    try:
+        import mapbox_vector_tile as mvt
+    except Exception:
+        return None
+    xf, yf = deg2tile(lat, lon, z); X, Y = int(xf), int(yf)
+    best = 1e12
+    for dx in (0, -1, 1):
+        for dy in (0, -1, 1):
+            tx, ty = X+dx, Y+dy
+            try:
+                r = requests.get(f"https://cyberjapandata.gsi.go.jp/xyz/experimental_bvmap/{z}/{tx}/{ty}.pbf",
+                                 headers=UA, timeout=T)
+                if r.status_code != 200 or not r.content:
+                    continue
+                data = mvt.decode(r.content)
+            except Exception:
+                continue
+            layer = data.get("building") or data.get("建物")
+            if not layer:
+                continue
+            extent = layer.get("extent", 4096)
+            for f in layer.get("features", []):
+                for ring in _iter_rings(f.get("geometry", {})):
+                    for pt in ring:
+                        blat, blon = _extent_to_latlon(pt[0], pt[1], tx, ty, z, extent)
+                        d = haversine(lat, lon, blat, blon)
+                        if d < best:
+                            best = d
+    return round(best) if best < 1e12 else None
+
+def nearest_building(lat, lon):
+    vals = []
+    try:
+        v = _osm_building(lat, lon)
+        if v is not None: vals.append(v)
+    except Exception:
+        pass
+    try:
+        v = _gsi_building(lat, lon)
+        if v is not None: vals.append(v)
+    except Exception:
+        pass
+    return min(vals) if vals else None
 
 def coast_dist(lat, lon):
     """海岸線に加え、海・港湾水面（water/coastline/bay/strait）までの最短距離。

@@ -2,3 +2,4 @@ streamlit
 requests
 Pillow
 pyshp
+mapbox_vector_tile
