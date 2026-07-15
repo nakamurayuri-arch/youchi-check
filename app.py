@@ -487,24 +487,26 @@ def nearest_building(lat, lon):
     return min(vals) if vals else None
 
 def coast_dist(lat, lon):
-    """海（海岸線・海の面）までの最短距離。355mが出た軽量版に戻す。
-    重くすると北九州等でタイムアウトするため範囲は控えめ。池・川は塩害無関係で除外。"""
-    q = (f"[out:json][timeout:40];("
-         f"way(around:10000,{lat},{lon})[natural=coastline];"
-         f"way(around:6000,{lat},{lon})[natural=water][water~\"sea|bay|strait|lagoon|harbour\"];"
-         f"way(around:6000,{lat},{lon})[natural=bay];"
-         f"way(around:6000,{lat},{lon})[natural=strait];"
-         f"way(around:4000,{lat},{lon})[landuse=harbour];"
-         f"way(around:4000,{lat},{lon})[harbour=yes];"
-         f");out geom;")
+    """海（海岸線・海の面）までの最短距離。out geom(bbox)で地点周辺だけ切り抜き、
+    開けた海岸でも応答を軽くしてタイムアウトを防ぐ。池・川は塩害無関係で除外。"""
+    dlat, dlon = 0.12, 0.15
+    s, w, n, e = lat-dlat, lon-dlon, lat+dlat, lon+dlon
+    q = (f"[out:json][timeout:50];("
+         f"way(around:12000,{lat},{lon})[natural=coastline];"
+         f"way(around:8000,{lat},{lon})[natural=water][water~\"sea|bay|strait|lagoon|harbour\"];"
+         f"way(around:8000,{lat},{lon})[natural=bay];"
+         f"way(around:8000,{lat},{lon})[natural=strait];"
+         f"way(around:5000,{lat},{lon})[landuse=harbour];"
+         f"way(around:5000,{lat},{lon})[harbour=yes];"
+         f");out geom({s},{w},{n},{e});")
     try:
         js = ovp(q)
     except Exception:
         return None
     dmin = 1e12
-    for e in js.get("elements", []):
-        for p in e.get("geometry", []) or []:
-            if "lat" in p:
+    for el in js.get("elements", []):
+        for p in el.get("geometry", []) or []:
+            if p and "lat" in p:
                 dmin = min(dmin, haversine(lat, lon, p["lat"], p["lon"]))
     return round(dmin) if dmin < 1e12 else None
 
