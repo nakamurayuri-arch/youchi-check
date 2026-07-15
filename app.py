@@ -219,6 +219,27 @@ def reinfolib_hit(lat, lon, endpoint, z=15):
             return {"hit": True, "props": f.get("properties", {})}
     return {"hit": False}
 
+def _kubun_label(props):
+    """XKT001の属性から 市街化区域/市街化調整区域/非線引き を推定。"""
+    for v in props.values():
+        if isinstance(v, str):
+            if "調整" in v:
+                return "市街化調整区域"
+            if "市街化区域" in v:
+                return "市街化区域"
+            if ("非線引" in v) or ("区域区分非設定" in v) or ("非設定" in v):
+                return "非線引き（区域区分なし）"
+    for k, v in props.items():
+        if ("kubun" in str(k).lower()) or ("区域区分" in str(k)):
+            s = str(v).lstrip("0") or "0"
+            if s == "2":
+                return "市街化調整区域"
+            if s == "1":
+                return "市街化区域"
+            if s == "3":
+                return "非線引き（区域区分なし）"
+    return None
+
 def label_from(props, keys):
     for k in keys:
         if k in props and props[k] not in (None, ""):
@@ -547,6 +568,22 @@ if st.button("▶ チェックする", type="primary"):
     if REINFOLIB_KEY:
         for name, ep, keys in REINFOLIB:
             r = rein.get(name, {})
+            if name == "市街化区域/調整区域":
+                if r.get("err"):
+                    st.write(f"- 市街化調整区域： 取得エラー（{r['err']}）")
+                elif r.get("hit"):
+                    lab = _kubun_label(r.get("props", {}))
+                    if lab == "市街化調整区域":
+                        st.write("- 市街化調整区域： **⚠ 該当（市街化調整区域）**")
+                    elif lab:
+                        st.write(f"- 市街化調整区域： **○ 非該当**（{lab}）")
+                    else:
+                        st.write("- 市街化調整区域： 都市計画区域内だが区分の自動判別ができず → 下の属性を確認")
+                    with st.expander("XKT001の属性（区域区分の確認用）"):
+                        st.json(r.get("props", {}))
+                else:
+                    st.write("- 市街化調整区域： **○ 非該当**（都市計画区域外の可能性）")
+                continue
             if r.get("err"):
                 st.write(f"- {name}： 取得エラー（{r['err']}）")
             elif r.get("hit"):
