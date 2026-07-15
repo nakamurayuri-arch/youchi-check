@@ -487,16 +487,15 @@ def nearest_building(lat, lon):
     return min(vals) if vals else None
 
 def coast_dist(lat, lon):
-    """海（海岸線・海の面）までの最短距離。海岸線は20km、海の面(sea/bay/strait)は10kmまで、
-    way/relation の両方を対象。池・川は塩害に無関係なので拾わない。"""
-    q = (f"[out:json][timeout:90];("
-         f"way(around:20000,{lat},{lon})[natural=coastline];"
-         f"way(around:12000,{lat},{lon})[natural=water][water~\"sea|bay|strait|lagoon|harbour\"];"
-         f"relation(around:12000,{lat},{lon})[natural=water][water~\"sea|bay|strait|lagoon|harbour\"];"
-         f"way(around:12000,{lat},{lon})[natural=bay];"
-         f"relation(around:12000,{lat},{lon})[natural=bay];"
-         f"way(around:12000,{lat},{lon})[natural=strait];"
-         f"relation(around:12000,{lat},{lon})[natural=strait];"
+    """海（海岸線・海の面）までの最短距離。355mが出た軽量版に戻す。
+    重くすると北九州等でタイムアウトするため範囲は控えめ。池・川は塩害無関係で除外。"""
+    q = (f"[out:json][timeout:40];("
+         f"way(around:10000,{lat},{lon})[natural=coastline];"
+         f"way(around:6000,{lat},{lon})[natural=water][water~\"sea|bay|strait|lagoon|harbour\"];"
+         f"way(around:6000,{lat},{lon})[natural=bay];"
+         f"way(around:6000,{lat},{lon})[natural=strait];"
+         f"way(around:4000,{lat},{lon})[landuse=harbour];"
+         f"way(around:4000,{lat},{lon})[harbour=yes];"
          f");out geom;")
     try:
         js = ovp(q)
@@ -504,14 +503,9 @@ def coast_dist(lat, lon):
         return None
     dmin = 1e12
     for e in js.get("elements", []):
-        # way は geometry、relation は members[].geometry
         for p in e.get("geometry", []) or []:
             if "lat" in p:
                 dmin = min(dmin, haversine(lat, lon, p["lat"], p["lon"]))
-        for mem in e.get("members", []) or []:
-            for p in mem.get("geometry", []) or []:
-                if "lat" in p:
-                    dmin = min(dmin, haversine(lat, lon, p["lat"], p["lon"]))
     return round(dmin) if dmin < 1e12 else None
 
 def revgeo(lat, lon):
@@ -651,7 +645,7 @@ if st.button("▶ チェックする", type="primary"):
 
     st.subheader("周辺")
     bt = "周辺に建物なし" if bldg is None else (f"{bldg} m ⚠100m未満" if bldg < 100 else f"{bldg} m")
-    ct = "8km内に海岸なし(内陸)" if coast is None else (f"{coast} m ⚠500m未満(重塩害注意)" if coast < 500 else f"{coast} m")
+    ct = "海岸を検出できず(内陸の可能性)" if coast is None else (f"{coast} m ⚠500m未満(重塩害注意)" if coast < 500 else f"{coast} m")
     st.write(f"- 最寄り道路： **{(road['cls']+' '+road['name']+' '+str(road['d'])+'m') if road else '取得できず'}**")
     st.write(f"- 最寄り建物(住宅目安)： **{bt}**")
     st.write(f"- 海岸まで(重塩害)： **{ct}**")
