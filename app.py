@@ -420,7 +420,20 @@ def nearest_building(lat, lon):
     return round(dmin) if dmin < 1e12 else None
 
 def coast_dist(lat, lon):
-    js = ovp(f"[out:json][timeout:50];way(around:8000,{lat},{lon})[natural=coastline];out geom;")
+    """海岸線に加え、海・港湾水面（water/coastline/bay/strait）までの最短距離。
+    埋立地・港湾では natural=coastline が水際に無いことがあるため水面も対象にする。"""
+    q = (f"[out:json][timeout:60];("
+         f"way(around:8000,{lat},{lon})[natural=coastline];"
+         f"way(around:5000,{lat},{lon})[natural=water][water~\"sea|bay|strait|lagoon|harbour\"];"
+         f"way(around:5000,{lat},{lon})[natural=bay];"
+         f"way(around:5000,{lat},{lon})[natural=strait];"
+         f"way(around:3000,{lat},{lon})[landuse=harbour];"
+         f"way(around:3000,{lat},{lon})[harbour=yes];"
+         f");out geom;")
+    try:
+        js = ovp(q)
+    except Exception:
+        return None
     dmin = 1e12
     for e in js.get("elements", []):
         for p in e.get("geometry", []):
