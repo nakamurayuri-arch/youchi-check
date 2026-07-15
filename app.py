@@ -805,7 +805,7 @@ if st.button("▶ チェックする", type="primary"):
                 if REINFOLIB_KEY:
                     ff = face_flood(_pts)
                     if ff.get("max_rank"):
-                        st.markdown(f"- 洪水（面）： **{ff['cover']}**（区画内 最大 {ff['max_depth']}／{ff['n_hit']}/{ff['n']}点該当）　<a href=\"https://disaportal.gsi.go.jp/maps/index.html?layerset=kouzui#17/{lat}/{lon}\" target=\"_blank\" rel=\"noopener\">🗺 地図（別タブ）</a>", unsafe_allow_html=True)
+                        st.write(f"- 洪水（面）： **{ff['cover']}**（区画内 最大 {ff['max_depth']}／{ff['n_hit']}/{ff['n']}点該当）")
                     else:
                         st.write(f"- 洪水（面）： **{ff['cover']}**")
                     fk = face_kubun(_pts)
@@ -892,15 +892,10 @@ if st.button("▶ チェックする", type="primary"):
                 line = f"- {k}： **○ 非該当**"
             else:
                 line = f"- {k}： 要確認"
-        _lsname = ("kouzui" if k.startswith("洪水") else
-                   "tsunami" if k.startswith("津波") else
-                   "takashio" if k.startswith("高潮") else "dosha")
-        _mu = f"https://disaportal.gsi.go.jp/maps/index.html?layerset={_lsname}#17/{lat}/{lon}"
-        st.markdown(line + f"　<a href=\"{_mu}\" target=\"_blank\" rel=\"noopener\">🗺 地図（別タブ）</a>", unsafe_allow_html=True)
+        st.write(line)
     if isinstance(fl, dict) and fl.get("hit"):
         with st.expander("洪水の内訳（XKT026が返した該当ポリゴン）"):
             st.json({"tile_features": fl.get("tile_features"), "matches": fl.get("matches")})
-    st.markdown(f"洪水深の権威確認：<a href=\"https://disaportal.gsi.go.jp/maps/index.html?layerset=kouzui#17/{lat}/{lon}\" target=\"_blank\" rel=\"noopener\">重ねるハザードマップ（想定最大規模）で開く（別タブ）</a>", unsafe_allow_html=True)
     for nm, res in [("洪水", fl), ("津波", tsu), ("高潮", hig)]:
         if isinstance(res, dict) and res.get("err"):
             st.caption(f"（{nm}の属性取得でエラー: {res['err']}。タイル判定にフォールバック）")
@@ -926,7 +921,6 @@ if st.button("▶ チェックする", type="primary"):
                         st.json(r.get("all_props", []))
                 else:
                     st.write("- 市街化調整区域： **○ 非該当**（都市計画区域外の可能性）")
-                st.caption(f"区域区分の判定は本アプリ（reinfolib XKT001）。位置確認：[Googleマップ](https://www.google.com/maps?q={lat},{lon})")
                 continue
             if r.get("err"):
                 st.write(f"- {name}： 取得エラー（{r['err']}）")
@@ -935,7 +929,7 @@ if st.button("▶ チェックする", type="primary"):
             else:
                 st.write(f"- {name}： **○ 非該当**")
     else:
-        st.markdown(f"- 市街化調整・用途・自然公園・地すべり・急傾斜： APIキー設定後に自動判定。今は[国交省/環境省マップ](https://disaportal.gsi.go.jp/maps/index.html#16/{lat}/{lon})で確認")
+        st.markdown("- 市街化調整・用途・自然公園・地すべり・急傾斜： reinfolib APIキー設定後に自動判定（上のアプリ内地図でも確認できます）")
 
     st.subheader("周辺")
     bt = "周辺に建物なし" if bldg is None else (f"{bldg} m ⚠100m未満" if bldg < 100 else f"{bldg} m")
@@ -971,7 +965,6 @@ if st.button("▶ チェックする", type="primary"):
     with st.expander("A12 判定の診断"):
         st.json(a12.get("diag") or {"注意": "診断情報なし"})
     st.caption("※A12は2015年度データ。農用地区域（青地）は参考表示で精度保証なし。第何種は農業委員会、地目は登記簿で確認。")
-    st.caption(f"農地の地目・地番・青地/白地の確認：[農地ナビ](https://map.maff.go.jp/)（地番で検索）／位置：[Googleマップ](https://www.google.com/maps?q={lat},{lon})")
 
     st.subheader("その他（データ無し→リンク確認）")
     st.markdown(
