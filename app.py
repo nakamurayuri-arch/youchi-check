@@ -113,6 +113,94 @@ def kml_centroid(coords):
     xs=[c[0] for c in coords]; ys=[c[1] for c in coords]
     return (sum(ys)/len(ys), sum(xs)/len(xs))  # (lat, lon)
 
+def sample_points(coords, grid=3):
+    """区画ポリゴン(coords=[(lon,lat)]) → 頂点+辺中点+重心+内部グリッド点。"""
+    n = len(coords)
+    if n == 0:
+        return []
+    pts = list(coords)
+    for i in range(n):
+        x1, y1 = coords[i]; x2, y2 = coords[(i+1) % n]
+        pts.append(((x1+x2)/2, (y1+y2)/2))
+    cx = sum(p[0] for p in coords)/n; cy = sum(p[1] for p in coords)/n
+    pts.append((cx, cy))
+    xs = [p[0] for p in coords]; ys = [p[1] for p in coords]
+    xmin, xmax, ymin, ymax = min(xs), max(xs), min(ys), max(ys)
+    def _pip(x, y, ring):
+        inside = False; m = len(ring); j = m-1
+        for i in range(m):
+            xi, yi = ring[i]; xj, yj = ring[j]
+            if ((yi > y) != (yj > y)) and (x < (xj-xi)*(y-yi)/(yj-yi)+xi):
+                inside = not inside
+            j = i
+        return inside
+    for gx in range(1, grid):
+        for gy in range(1, grid):
+            x = xmin+(xmax-xmin)*gx/grid; y = ymin+(ymax-ymin)*gy/grid
+            if _pip(x, y, coords):
+                pts.append((x, y))
+    return list({(round(x, 7), round(y, 7)) for (x, y) in pts})
+
+def _reinfolib_tile(endpoint, xt, yt, z):
+    url = f"https://www.reinfolib.mlit.go.jp/ex-api/external/{endpoint}?response_format=geojson&z={z}&x={xt}&y={yt}"
+    r = requests.get(url, headers={**UA, "Ocp-Apim-Subscription-Key": REINFOLIB_KEY}, timeout=T)
+    if r.status_code != 200:
+        return []
+    gj = r.json()
+    return gj.get("features", []) if isinstance(gj, dict) else []
+
+def face_reinfolib(endpoint, pts, z):
+    """各サンプル点で該当した全ポリゴンのpropsリストを返す（タイルキャッシュ）。"""
+    cache = {}; out = []
+    for (lon, lat) in pts:
+        xf, yf = deg2tile(lat, lon, z); key = (int(xf), int(yf))
+        if key not in cache:
+            try:
+                cache[key] = _reinfolib_tile(endpoint, key[0], key[1], z)
+            except Exception:
+                cache[key] = []
+        matched = [f.get("properties", {}) for f in cache[key] if point_in_geom(lon, lat, f.get("geometry", {}))]
+        out.append(matched)
+    return out
+
+def _coverage(n_hit, n):
+    if n == 0: return "不明"
+    if n_hit == 0: return "非該当"
+    if n_hit == n: return "区画ほぼ全域が該当"
+    return "区画の一部が該当"
+
+def face_flood(pts):
+    lists = face_reinfolib("XKT026", pts, 15)
+    ranks = []
+    for ml in lists:
+        rs = [int(p.get("A31a_205") or 0) for p in ml if p.get("A31a_205")]
+        if rs: ranks.append(max(rs))
+    n_hit = len(ranks); n = len(pts)
+    mx = max(ranks) if ranks else None
+    return {"cover": _coverage(n_hit, n), "n_hit": n_hit, "n": n,
+            "max_depth": FLOOD_RANK.get(mx) if mx else None, "max_rank": mx}
+
+def face_kubun(pts):
+    lists = face_reinfolib("XKT001", pts, 15)
+    labels = [_kubun_from_feats(ml) for ml in lists]
+    n_chosei = sum(1 for l in labels if l == "市街化調整区域")
+    n_shigai = sum(1 for l in labels if l == "市街化区域")
+    return {"n_chosei": n_chosei, "n_shigai": n_shigai, "n": len(pts),
+            "cover_chosei": _coverage(n_chosei, len(pts))}
+
+def face_a12(pts, addr):
+    st_counts = {"青地": 0, "白地": 0, "非農地": 0}
+    for (lon, lat) in pts:
+        try:
+            s = a12_status(lat, lon, addr).get("status")
+        except Exception:
+            s = None
+        if s in st_counts: st_counts[s] += 1
+    n = len(pts)
+    return {"counts": st_counts, "n": n,
+            "cover_aochi": _coverage(st_counts["青地"], n)}
+
+
 def haversine(a, b, c, d):
     R = 6371000.0; r = math.radians
     h = math.sin(r(c-a)/2)**2 + math.cos(r(a))*math.cos(r(c))*math.sin(r(d-b)/2)**2
@@ -671,6 +759,28 @@ if st.button("▶ チェックする", type="primary"):
                             tooltip={"text": "{name}"}))
         except Exception as _me:
             st.caption(f"（区画マップの描画をスキップ: {_me}）")
+        _poly = next((f for f in kml_feats if f["type"] == "polygon"), None)
+        if _poly:
+            with st.spinner("区画の面判定中…"):
+                _pts = sample_points(_poly["coords"], grid=3)
+                st.subheader(f"区画（面）判定 ｜ サンプル{len(_pts)}点")
+                if REINFOLIB_KEY:
+                    ff = face_flood(_pts)
+                    if ff.get("max_rank"):
+                        st.write(f"- 洪水（面）： **{ff['cover']}**（区画内 最大 {ff['max_depth']}／{ff['n_hit']}/{ff['n']}点該当）　[🗺 地図](https://disaportal.gsi.go.jp/maps/index.html?ll={lat}%2C{lon}&z=17&base=pale&layerset=kouzui)")
+                    else:
+                        st.write(f"- 洪水（面）： **{ff['cover']}**")
+                    fk = face_kubun(_pts)
+                    if fk["n_chosei"] > 0:
+                        st.write(f"- 市街化調整（面）： **{fk['cover_chosei']}**（調整区域 {fk['n_chosei']}/{fk['n']}点）")
+                    else:
+                        st.write(f"- 市街化調整（面）： **区画内に市街化調整区域なし**（市街化区域 {fk['n_shigai']}/{fk['n']}点）")
+                else:
+                    st.write("- 洪水・市街化調整（面）： reinfolib APIキー設定後に面判定")
+                fa = face_a12(_pts, addr_in)
+                _c = fa["counts"]
+                st.write(f"- 青地/白地（面）： 青地 {_c['青地']}／白地 {_c['白地']}／非農地 {_c['非農地']}（全{fa['n']}点）→ 青地は{fa['cover_aochi']}")
+                st.caption("面判定は区画の頂点・辺・内部のサンプル点による近似です。境界付近は公式マップで確認してください。")
     with st.spinner("判定中…（10〜40秒）"):
         addr = revgeo(lat, lon)
         try: elev, slp = slope(lat, lon)
