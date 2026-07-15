@@ -214,30 +214,20 @@ def reinfolib_hit(lat, lon, endpoint, z=15):
         return {"err": f"HTTP {r.status_code}"}
     gj = r.json()
     feats = gj.get("features", []) if isinstance(gj, dict) else []
-    for f in feats:
-        if point_in_geom(lon, lat, f.get("geometry", {})):
-            return {"hit": True, "props": f.get("properties", {})}
+    matched = [f.get("properties", {}) for f in feats if point_in_geom(lon, lat, f.get("geometry", {}))]
+    if matched:
+        return {"hit": True, "props": matched[0], "all_props": matched}
     return {"hit": False}
 
-def _kubun_label(props):
-    """XKT001の属性から 市街化区域/市街化調整区域/非線引き を推定。"""
-    for v in props.values():
-        if isinstance(v, str):
-            if "調整" in v:
-                return "市街化調整区域"
-            if "市街化区域" in v:
-                return "市街化区域"
-            if ("非線引" in v) or ("区域区分非設定" in v) or ("非設定" in v):
-                return "非線引き（区域区分なし）"
-    for k, v in props.items():
-        if ("kubun" in str(k).lower()) or ("区域区分" in str(k)):
-            s = str(v).lstrip("0") or "0"
-            if s == "2":
-                return "市街化調整区域"
-            if s == "1":
-                return "市街化区域"
-            if s == "3":
-                return "非線引き（区域区分なし）"
+def _kubun_from_feats(all_props):
+    """XKT001の該当フィーチャ群から 市街化区域/市街化調整区域/非線引き を判定。"""
+    vals = [str(p.get("area_classification_ja") or "") for p in (all_props or [])]
+    if any("市街化調整区域" in v for v in vals):
+        return "市街化調整区域"
+    if any("市街化区域" in v for v in vals):
+        return "市街化区域"
+    if any("都市計画区域" in v for v in vals):
+        return "非線引き都市計画区域（区域区分なし）"
     return None
 
 def label_from(props, keys):
@@ -572,15 +562,17 @@ if st.button("▶ チェックする", type="primary"):
                 if r.get("err"):
                     st.write(f"- 市街化調整区域： 取得エラー（{r['err']}）")
                 elif r.get("hit"):
-                    lab = _kubun_label(r.get("props", {}))
+                    lab = _kubun_from_feats(r.get("all_props", []))
                     if lab == "市街化調整区域":
                         st.write("- 市街化調整区域： **⚠ 該当（市街化調整区域）**")
+                    elif lab == "市街化区域":
+                        st.write("- 市街化調整区域： **○ 非該当（市街化区域）**")
                     elif lab:
                         st.write(f"- 市街化調整区域： **○ 非該当**（{lab}）")
                     else:
-                        st.write("- 市街化調整区域： 都市計画区域内だが区分の自動判別ができず → 下の属性を確認")
-                    with st.expander("XKT001の属性（区域区分の確認用）"):
-                        st.json(r.get("props", {}))
+                        st.write("- 市街化調整区域： 都市計画区域内だが区分不明 → 下の属性を確認")
+                    with st.expander("XKT001の該当属性（全ポリゴン）"):
+                        st.json(r.get("all_props", []))
                 else:
                     st.write("- 市街化調整区域： **○ 非該当**（都市計画区域外の可能性）")
                 continue
