@@ -767,7 +767,7 @@ if st.button("▶ チェックする", type="primary"):
                 if REINFOLIB_KEY:
                     ff = face_flood(_pts)
                     if ff.get("max_rank"):
-                        st.markdown(f"- 洪水（面）： **{ff['cover']}**（区画内 最大 {ff['max_depth']}／{ff['n_hit']}/{ff['n']}点該当）　<a href=\"https://disaportal.gsi.go.jp/maps/index.html?ll={lat},{lon}&z=17&base=pale&layerset=kouzui&_p={int(lat*1e6)}_{int(lon*1e6)}\" target=\"_blank\" rel=\"noopener\">🗺 地図（別タブ）</a>", unsafe_allow_html=True)
+                        st.markdown(f"- 洪水（面）： **{ff['cover']}**（区画内 最大 {ff['max_depth']}／{ff['n_hit']}/{ff['n']}点該当）　<a href=\"https://disaportal.gsi.go.jp/maps/index.html?layerset=kouzui#17/{lat}/{lon}\" target=\"_blank\" rel=\"noopener\">🗺 地図（別タブ）</a>", unsafe_allow_html=True)
                     else:
                         st.write(f"- 洪水（面）： **{ff['cover']}**")
                     fk = face_kubun(_pts)
@@ -847,12 +847,12 @@ if st.button("▶ チェックする", type="primary"):
         _lsname = ("kouzui" if k.startswith("洪水") else
                    "tsunami" if k.startswith("津波") else
                    "takashio" if k.startswith("高潮") else "dosha")
-        _mu = f"https://disaportal.gsi.go.jp/maps/index.html?ll={lat},{lon}&z=17&base=pale&layerset={_lsname}&_p={int(lat*1e6)}_{int(lon*1e6)}"
+        _mu = f"https://disaportal.gsi.go.jp/maps/index.html?layerset={_lsname}#17/{lat}/{lon}"
         st.markdown(line + f"　<a href=\"{_mu}\" target=\"_blank\" rel=\"noopener\">🗺 地図（別タブ）</a>", unsafe_allow_html=True)
     if isinstance(fl, dict) and fl.get("hit"):
         with st.expander("洪水の内訳（XKT026が返した該当ポリゴン）"):
             st.json({"tile_features": fl.get("tile_features"), "matches": fl.get("matches")})
-    st.markdown(f"洪水深の権威確認：<a href=\"https://disaportal.gsi.go.jp/maps/index.html?ll={lat},{lon}&z=17&base=pale&layerset=kouzui&_p={int(lat*1e6)}_{int(lon*1e6)}\" target=\"_blank\" rel=\"noopener\">重ねるハザードマップ（想定最大規模）で開く（別タブ）</a>", unsafe_allow_html=True)
+    st.markdown(f"洪水深の権威確認：<a href=\"https://disaportal.gsi.go.jp/maps/index.html?layerset=kouzui#17/{lat}/{lon}\" target=\"_blank\" rel=\"noopener\">重ねるハザードマップ（想定最大規模）で開く（別タブ）</a>", unsafe_allow_html=True)
     for nm, res in [("洪水", fl), ("津波", tsu), ("高潮", hig)]:
         if isinstance(res, dict) and res.get("err"):
             st.caption(f"（{nm}の属性取得でエラー: {res['err']}。タイル判定にフォールバック）")
@@ -887,7 +887,7 @@ if st.button("▶ チェックする", type="primary"):
             else:
                 st.write(f"- {name}： **○ 非該当**")
     else:
-        st.markdown(f"- 市街化調整・用途・自然公園・地すべり・急傾斜： APIキー設定後に自動判定。今は[国交省/環境省マップ](https://disaportal.gsi.go.jp/maps/?ll={lat},{lon}&z=16&_p={int(lat*1e6)}_{int(lon*1e6)})で確認")
+        st.markdown(f"- 市街化調整・用途・自然公園・地すべり・急傾斜： APIキー設定後に自動判定。今は[国交省/環境省マップ](https://disaportal.gsi.go.jp/maps/index.html#16/{lat}/{lon})で確認")
 
     st.subheader("周辺")
     bt = "周辺に建物なし" if bldg is None else (f"{bldg} m ⚠100m未満" if bldg < 100 else f"{bldg} m")
