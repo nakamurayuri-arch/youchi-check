@@ -36,6 +36,39 @@ def parse_coord(s):
         return round(lat, 7), round(lon, 7)
     return None
 
+def parse_one(s):
+    """1つの座標値を10進 or 度分秒から解釈して float(度) を返す。N/E=+, S/W=-。"""
+    if s is None:
+        return None
+    s = str(s).strip().replace("　", " ")
+    if s == "":
+        return None
+    # 10進（例 33.944370 / -33.94 / 33.94N）
+    m = re.fullmatch(r"\s*([+-]?\d+(?:\.\d+)?)\s*([NSEWnsew北南東西]?)\s*", s)
+    if m:
+        v = float(m.group(1))
+        if m.group(2) in ("S", "s", "W", "w", "南", "西"):
+            v = -abs(v)
+        return v
+    # 度分秒（例 33°56'39.7"N / N33 56 39.7 / 33 56 39.7）
+    m = re.search(r"([NSEWnsew北南東西])?\s*(\d+)[°\s]+(\d+)['′\s]+(\d+(?:\.\d+)?)[\"″]?\s*([NSEWnsew北南東西])?", s)
+    if m:
+        d, mnt, sec = int(m.group(2)), int(m.group(3)), float(m.group(4))
+        v = d + mnt/60 + sec/3600
+        hemi = (m.group(1) or m.group(5) or "").upper()
+        if hemi in ("S", "W", "南", "西"):
+            v = -v
+        return round(v, 7)
+    # 度分（例 33 56.66）
+    m = re.fullmatch(r"\s*([NSEWnsew北南東西])?\s*(\d+)[°\s]+(\d+(?:\.\d+)?)['′]?\s*([NSEWnsew北南東西])?\s*", s)
+    if m:
+        v = int(m.group(2)) + float(m.group(3))/60
+        hemi = (m.group(1) or m.group(4) or "").upper()
+        if hemi in ("S", "W", "南", "西"):
+            v = -v
+        return round(v, 7)
+    return None
+
 def haversine(a, b, c, d):
     R = 6371000.0; r = math.radians
     h = math.sin(r(c-a)/2)**2 + math.cos(r(a))*math.cos(r(c))*math.sin(r(d-b)/2)**2
@@ -486,29 +519,45 @@ def nearest_building(lat, lon):
         pass
     return min(vals) if vals else None
 
+def _ovp_geom(q, timeout=60):
+    r = requests.get(OVP, params={"data": q}, headers=UA, timeout=timeout)
+    return r.json()
+
 def coast_dist(lat, lon):
-    """海（海岸線・海の面）までの最短距離。out geom(bbox)で地点周辺だけ切り抜き、
-    開けた海岸でも応答を軽くしてタイムアウトを防ぐ。池・川は塩害無関係で除外。"""
-    dlat, dlon = 0.12, 0.15
-    s, w, n, e = lat-dlat, lon-dlon, lat+dlat, lon+dlon
-    q = (f"[out:json][timeout:50];("
-         f"way(around:12000,{lat},{lon})[natural=coastline];"
-         f"way(around:8000,{lat},{lon})[natural=water][water~\"sea|bay|strait|lagoon|harbour\"];"
-         f"way(around:8000,{lat},{lon})[natural=bay];"
-         f"way(around:8000,{lat},{lon})[natural=strait];"
-         f"way(around:5000,{lat},{lon})[landuse=harbour];"
-         f"way(around:5000,{lat},{lon})[harbour=yes];"
-         f");out geom({s},{w},{n},{e});")
-    try:
-        js = ovp(q)
-    except Exception:
-        return None
+    """海（海岸線・海面）までの最短距離＋診断。海岸線と海面を別クエリにして切り分ける。"""
+    diag = {"n_coast": 0, "n_water": 0, "err": None, "dist": None}
     dmin = 1e12
-    for el in js.get("elements", []):
-        for p in el.get("geometry", []) or []:
-            if p and "lat" in p:
-                dmin = min(dmin, haversine(lat, lon, p["lat"], p["lon"]))
-    return round(dmin) if dmin < 1e12 else None
+    try:
+        js = _ovp_geom(f"[out:json][timeout:55];way(around:15000,{lat},{lon})[natural=coastline];out geom;")
+        for el in js.get("elements", []):
+            diag["n_coast"] += 1
+            for p in el.get("geometry", []) or []:
+                if p and "lat" in p:
+                    dmin = min(dmin, haversine(lat, lon, p["lat"], p["lon"]))
+    except Exception as ex:
+        diag["err"] = f"coastline:{ex}"
+    try:
+        q = (f"[out:json][timeout:55];("
+             f"way(around:8000,{lat},{lon})[natural=water][water~\"sea|bay|strait|lagoon|harbour\"];"
+             f"relation(around:8000,{lat},{lon})[natural=water][water~\"sea|bay|strait|lagoon|harbour\"];"
+             f"way(around:8000,{lat},{lon})[natural=bay];"
+             f"way(around:6000,{lat},{lon})[landuse=harbour];"
+             f"way(around:6000,{lat},{lon})[harbour=yes];"
+             f");out geom;")
+        js = _ovp_geom(q)
+        for el in js.get("elements", []):
+            diag["n_water"] += 1
+            for p in el.get("geometry", []) or []:
+                if p and "lat" in p:
+                    dmin = min(dmin, haversine(lat, lon, p["lat"], p["lon"]))
+            for mem in el.get("members", []) or []:
+                for p in mem.get("geometry", []) or []:
+                    if p and "lat" in p:
+                        dmin = min(dmin, haversine(lat, lon, p["lat"], p["lon"]))
+    except Exception as ex:
+        diag["err"] = (diag["err"] or "") + f" water:{ex}"
+    diag["dist"] = round(dmin) if dmin < 1e12 else None
+    return diag
 
 def revgeo(lat, lon):
     try:
@@ -523,13 +572,15 @@ if not REINFOLIB_KEY:
 
 addr_in = st.text_input("住所（記録用。緯度経度が空のときはここから判定）",
                         placeholder="例: 滋賀県野洲市堤字ノ爪740-1")
-coord = st.text_input("緯度経度（あればこちらを優先。正確）",
-                      placeholder="例: 33.0598671, 131.9332333")
+_c1, _c2 = st.columns(2)
+with _c1:
+    lat_in = st.text_input("緯度", placeholder="例: 33.944370 / 33°56'39.7\"N")
+with _c2:
+    lon_in = st.text_input("経度", placeholder="例: 130.807654 / 130°48'27.6\"E")
 if st.button("▶ チェックする", type="primary"):
-    lat = lon = None
-    c = parse_coord(coord)
-    if c:
-        lat, lon = c
+    lat = parse_one(lat_in)
+    lon = parse_one(lon_in)
+    if lat is not None and lon is not None:
         if addr_in.strip():
             st.caption(f"判定は緯度経度を使用（住所『{addr_in.strip()}』は記録用）")
     elif addr_in.strip():
@@ -559,8 +610,9 @@ if st.button("▶ チェックする", type="primary"):
         except Exception: road = None
         try: bldg = nearest_building(lat, lon)
         except Exception: bldg = None
-        try: coast = coast_dist(lat, lon)
-        except Exception: coast = None
+        try: cd = coast_dist(lat, lon)
+        except Exception as _e: cd = {"dist": None, "err": str(_e), "n_coast": 0, "n_water": 0}
+        coast = cd.get("dist")
 
     st.subheader("基本")
     st.write({"緯度経度": f"{lat:.6f}, {lon:.6f}", "住所(推定)": addr or "取得できず",
@@ -651,6 +703,8 @@ if st.button("▶ チェックする", type="primary"):
     st.write(f"- 最寄り道路： **{(road['cls']+' '+road['name']+' '+str(road['d'])+'m') if road else '取得できず'}**")
     st.write(f"- 最寄り建物(住宅目安)： **{bt}**")
     st.write(f"- 海岸まで(重塩害)： **{ct}**")
+    with st.expander("海岸判定の診断"):
+        st.json(cd)
 
     st.subheader("農地（青地/白地：国土数値情報A12・2015年度）")
     try:
