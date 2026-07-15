@@ -487,15 +487,16 @@ def nearest_building(lat, lon):
     return min(vals) if vals else None
 
 def coast_dist(lat, lon):
-    """海岸線に加え、海・港湾水面（water/coastline/bay/strait）までの最短距離。
-    埋立地・港湾では natural=coastline が水際に無いことがあるため水面も対象にする。"""
-    q = (f"[out:json][timeout:60];("
-         f"way(around:8000,{lat},{lon})[natural=coastline];"
-         f"way(around:5000,{lat},{lon})[natural=water][water~\"sea|bay|strait|lagoon|harbour\"];"
-         f"way(around:5000,{lat},{lon})[natural=bay];"
-         f"way(around:5000,{lat},{lon})[natural=strait];"
-         f"way(around:3000,{lat},{lon})[landuse=harbour];"
-         f"way(around:3000,{lat},{lon})[harbour=yes];"
+    """海（海岸線・海の面）までの最短距離。海岸線は20km、海の面(sea/bay/strait)は10kmまで、
+    way/relation の両方を対象。池・川は塩害に無関係なので拾わない。"""
+    q = (f"[out:json][timeout:90];("
+         f"way(around:20000,{lat},{lon})[natural=coastline];"
+         f"way(around:12000,{lat},{lon})[natural=water][water~\"sea|bay|strait|lagoon|harbour\"];"
+         f"relation(around:12000,{lat},{lon})[natural=water][water~\"sea|bay|strait|lagoon|harbour\"];"
+         f"way(around:12000,{lat},{lon})[natural=bay];"
+         f"relation(around:12000,{lat},{lon})[natural=bay];"
+         f"way(around:12000,{lat},{lon})[natural=strait];"
+         f"relation(around:12000,{lat},{lon})[natural=strait];"
          f");out geom;")
     try:
         js = ovp(q)
@@ -503,32 +504,15 @@ def coast_dist(lat, lon):
         return None
     dmin = 1e12
     for e in js.get("elements", []):
-        for p in e.get("geometry", []):
-            dmin = min(dmin, haversine(lat, lon, p["lat"], p["lon"]))
+        # way は geometry、relation は members[].geometry
+        for p in e.get("geometry", []) or []:
+            if "lat" in p:
+                dmin = min(dmin, haversine(lat, lon, p["lat"], p["lon"]))
+        for mem in e.get("members", []) or []:
+            for p in mem.get("geometry", []) or []:
+                if "lat" in p:
+                    dmin = min(dmin, haversine(lat, lon, p["lat"], p["lon"]))
     return round(dmin) if dmin < 1e12 else None
-
-def geocode(addr):
-    """住所→(lat, lon, 表示住所)。国土地理院→Nominatimの順で試す（日本の番地に強い）。"""
-    # 1) 国土地理院 住所検索（日本の住所・番地に強い）
-    try:
-        js = requests.get("https://msearch.gsi.go.jp/address-search/AddressSearch",
-                          params={"q": addr}, headers=UA, timeout=T).json()
-        if js:
-            lon, lat = js[0]["geometry"]["coordinates"]
-            title = js[0].get("properties", {}).get("title", addr)
-            return float(lat), float(lon), title
-    except Exception:
-        pass
-    # 2) Nominatim（バックアップ）
-    try:
-        js = requests.get("https://nominatim.openstreetmap.org/search",
-                          params={"q": addr, "format": "json", "limit": 1, "accept-language": "ja",
-                                  "countrycodes": "jp"}, headers=UA, timeout=T).json()
-        if js:
-            return float(js[0]["lat"]), float(js[0]["lon"]), js[0].get("display_name")
-    except Exception:
-        pass
-    return None
 
 def revgeo(lat, lon):
     try:
