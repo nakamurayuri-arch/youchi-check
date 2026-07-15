@@ -840,6 +840,125 @@ def revgeo(lat, lon):
 if not REINFOLIB_KEY:
     st.warning("市街化調整・用途・自然公園・地すべり・急傾斜を自動判定するには、無料のreinfolib APIキーが必要です（申請 → Streamlitの Secrets に REINFOLIB_KEY を設定）。未設定の間はリンク表示になります。", icon="🔑")
 
+# ========== PowerPoint出力（テンプレ＋合成画像） ==========
+import os as _os
+GSI_PHOTO = "https://cyberjapandata.gsi.go.jp/xyz/seamlessphoto/{z}/{x}/{y}.jpg"
+TEMPLATE_PATH = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "dd_template.pptx")
+
+def _fetch_img(url, rgba=False):
+    try:
+        from PIL import Image
+        r = requests.get(url, headers=UA, timeout=T)
+        if r.status_code != 200:
+            return None
+        im = Image.open(BytesIO(r.content))
+        return im.convert("RGBA") if rgba else im.convert("RGB")
+    except Exception:
+        return None
+
+def _draw_geom_on(draw, geom, topx, fill):
+    t = geom.get("type"); c = geom.get("coordinates")
+    polys = [c] if t == "Polygon" else (c if t == "MultiPolygon" else [])
+    for poly in polys:
+        if poly and len(poly[0]) >= 3:
+            draw.polygon([topx(x, y) for (x, y) in poly[0]], fill=fill)
+
+def compose_map(lat, lon, z=16, ntiles=3, overlay_url=None, zoning=None, farm=None, poly=None, label=None):
+    from PIL import Image, ImageDraw
+    xf, yf = deg2tile(lat, lon, z); xc, yc = int(xf), int(yf); half = ntiles // 2
+    W = H = ntiles * 256
+    canvas = Image.new("RGB", (W, H), (210, 210, 210))
+    for dx in range(-half, half + 1):
+        for dy in range(-half, half + 1):
+            t = _fetch_img(GSI_PHOTO.format(z=z, x=xc + dx, y=yc + dy))
+            if t:
+                canvas.paste(t.resize((256, 256)), ((dx + half) * 256, (dy + half) * 256))
+    if overlay_url:
+        layer = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+        for dx in range(-half, half + 1):
+            for dy in range(-half, half + 1):
+                t = _fetch_img(overlay_url.format(z=z, x=xc + dx, y=yc + dy), rgba=True)
+                if t:
+                    t = t.resize((256, 256))
+                    layer.paste(t, ((dx + half) * 256, (dy + half) * 256), t)
+        canvas = Image.alpha_composite(canvas.convert("RGBA"), layer).convert("RGB")
+    draw = ImageDraw.Draw(canvas, "RGBA")
+    def topx(lo, la):
+        x, y = deg2tile(la, lo, z); return ((x - (xc - half)) * 256, (y - (yc - half)) * 256)
+    if zoning:
+        for f in zoning.get("features", []):
+            cc = (f.get("properties", {}).get("area_classification_ja") or "")
+            col = (203, 15, 75, 110) if "調整" in cc else ((46, 109, 138, 100) if "市街化区域" in cc else (150, 150, 150, 70))
+            _draw_geom_on(draw, f.get("geometry", {}), topx, col)
+    if farm:
+        for f in farm.get("features", []):
+            ln = f.get("properties", {}).get("LAYER_NO")
+            col = (31, 138, 76, 110) if ln == 6 else (200, 160, 46, 110)
+            _draw_geom_on(draw, f.get("geometry", {}), topx, col)
+    if poly:
+        pts = [topx(lo, la) for (lo, la) in poly]
+        draw.line(pts + [pts[0]], fill=(203, 15, 75, 255), width=4)
+    cx, cy = topx(lon, lat)
+    draw.ellipse([cx - 7, cy - 7, cx + 7, cy + 7], fill=(32, 55, 108, 255), outline=(255, 255, 255, 255), width=2)
+    if label:
+        draw.rectangle([0, 0, 8 + 7 * len(label), 22], fill=(255, 255, 255, 210))
+        draw.text((5, 5), label, fill=(20, 20, 20))
+    out = BytesIO(); canvas.save(out, "PNG"); return out.getvalue()
+
+def build_report_pptx(rows, subtitle, images):
+    import copy as _copy
+    from pptx import Presentation
+    from pptx.util import Inches
+    from pptx.dml.color import RGBColor
+    from pptx.text.text import _Paragraph
+    RED = RGBColor(0xC0, 0x00, 0x00)
+    def setc(cell, text, bold=False, red=False):
+        tf = cell.text_frame; lines = str(text).split("\n")
+        for _pp in tf.paragraphs[1:]:
+            _pp._p.getparent().remove(_pp._p)
+        p0 = tf.paragraphs[0]; r0 = p0.runs[0] if p0.runs else p0.add_run()
+        r0.text = lines[0]; r0.font.bold = bold
+        if red: r0.font.color.rgb = RED
+        for r in p0.runs[1:]:
+            r._r.getparent().remove(r._r)
+        for extra in lines[1:]:
+            newp = _copy.deepcopy(p0._p); p0._p.getparent().append(newp)
+            pp = _Paragraph(newp, p0._parent)
+            for rr in pp.runs[1:]:
+                rr._r.getparent().remove(rr._r)
+            pp.runs[0].text = extra; pp.runs[0].font.bold = bold
+            if red: pp.runs[0].font.color.rgb = RED
+    prs = Presentation(TEMPLATE_PATH); s = prs.slides[0]
+    for sh in s.shapes:
+        if sh.name == "タイトル 1" and sh.has_text_frame:
+            sh.text_frame.paragraphs[0].runs[0].text = "用地調査結果"
+        if sh.name == "コンテンツ プレースホルダー 4" and sh.has_text_frame:
+            tf = sh.text_frame
+            (tf.paragraphs[0].runs[0] if tf.paragraphs[0].runs else tf.paragraphs[0].add_run()).text = subtitle
+    tbl = [sh for sh in s.shapes if sh.has_table][0].table
+    tbl.columns[0].width = Inches(2.5); tbl.columns[1].width = Inches(3.0)
+    nd = len(tbl.rows) - 1
+    for i, (k, v, hit) in enumerate(rows):
+        if i + 1 <= nd:
+            setc(tbl.cell(i + 1, 0), k, bold=True)
+            setc(tbl.cell(i + 1, 1), v, bold=bool(hit), red=bool(hit))
+    for ri in range(nd, len(rows), -1):
+        tr = tbl.rows[ri]._tr; tr.getparent().remove(tr)
+    remove = {"図 31", "図 9", "図 13", "Rectangle 15", "Straight Connector 17",
+              "Straight Connector 18", "5-Point Star 23", "矢印: 下 21", "正方形/長方形 22", "矢印: 下 24"}
+    for sh in list(s.shapes):
+        if sh.name in remove:
+            sh._element.getparent().remove(sh._element)
+    if images:
+        s.shapes.add_picture(BytesIO(images[0]), Inches(6.75), Inches(1.45), Inches(6.15), Inches(3.3))
+        rest = images[1:5]; n = len(rest)
+        if n:
+            gap = 0.15; total = 6.15
+            w = min(3.0, (total - gap * (n - 1)) / n); h = min(1.9, w * 0.66); T = 4.95
+            for i, img in enumerate(rest):
+                s.shapes.add_picture(BytesIO(img), Inches(6.75 + i * (w + gap)), Inches(T), Inches(w), Inches(h))
+    out = BytesIO(); prs.save(out); return out.getvalue()
+
 addr_in = st.text_input("住所（記録用。緯度経度が空のときはここから判定）",
                         placeholder="例: 滋賀県野洲市堤字ノ爪740-1")
 _c1, _c2 = st.columns(2)
@@ -1082,3 +1201,118 @@ if st.button("▶ チェックする", type="primary"):
     st.info("公開データからの一次確認です。最終確定は各自治体・現地・公式マップで。")
     if REINFOLIB_KEY:
         st.caption("このサービスは、国土交通省不動産情報ライブラリのAPI機能を使用していますが、提供情報の最新性、正確性、完全性等が保証されたものではありません。")
+
+    # ===== レポート用データ集約（PowerPoint出力用） =====
+    def _r_kubun():
+        if not REINFOLIB_KEY: return ("reinfolibキー未設定", False)
+        r = rein.get("市街化区域/調整区域", {})
+        if r.get("hit"):
+            lab = _kubun_from_feats(r.get("all_props", []))
+            if lab == "市街化調整区域": return ("該当（市街化調整区域）", True)
+            if lab == "市街化区域": return ("非該当（市街化区域）", False)
+            if lab: return ("非該当（" + lab + "）", False)
+            return ("都市計画区域内（区分不明）", False)
+        return ("非該当（都市計画区域外の可能性）", False)
+    def _r_youto():
+        if not REINFOLIB_KEY: return ("reinfolibキー未設定", False)
+        r = rein.get("用途地域", {})
+        return (label_from(r.get("props", {}), ["use_area_ja"]), True) if r.get("hit") else ("非該当", False)
+    def _r_nochi():
+        stt = a12.get("status")
+        if stt == "青地": return ("青地（農用地区域内）※農振除外が必要", True)
+        if stt == "白地": return ("白地（農業地域内・農用地区域外）", False)
+        if a12.get("err"): return ("取得エラー", False)
+        return ("非農地／農業地域外", False)
+    def _r_flood():
+        if isinstance(fl, dict) and not fl.get("err"):
+            if fl.get("hit"):
+                rv = "／" + str(fl.get("river")) if fl.get("river") else ""
+                return ("該当（" + str(fl.get("depth", "")) + rv + "）", True)
+            return ("非該当", False)
+        v = haz.get("洪水浸水(想定最大規模)")
+        return ("該当" if v else "非該当", bool(v))
+    def _r_tsuhig():
+        parts = []; hit = False
+        for nm, res, tl in [("津波", tsu, "津波浸水想定"), ("高潮", hig, "高潮浸水想定")]:
+            if isinstance(res, dict) and not res.get("err"):
+                if res.get("hit"):
+                    parts.append(nm + "該当（" + (res.get("depth") or "深さ区分なし") + "）"); hit = True
+                else:
+                    parts.append(nm + "非該当")
+            else:
+                v = haz.get(tl); parts.append(nm + ("該当" if v else "非該当")); hit = hit or bool(v)
+        return ("／".join(parts), hit)
+    def _r_dosha():
+        hit = any(haz.get(k) for k in ["土砂(土石流)", "土砂(急傾斜)", "土砂(地すべり)"])
+        return ("該当（警戒/特別警戒）" if hit else "非該当", hit)
+    def _r_kuiki():
+        if not REINFOLIB_KEY: return ("reinfolibキー未設定", False)
+        hits = [nm for nm, r in [("自然公園", rein.get("自然公園地域", {})),
+                                 ("地すべり", rein.get("地すべり防止区域", {})),
+                                 ("急傾斜", rein.get("急傾斜地崩壊危険区域", {}))] if r.get("hit")]
+        return ("該当：" + "・".join(hits) if hits else "非該当", bool(hits))
+    _coast = cd.get("dist") if isinstance(cd, dict) else None
+    _rows = [
+        ("所在地", (addr_in or addr or ""), False),
+        ("緯度経度", f"{lat:.6f}, {lon:.6f}", False),
+        ("市街化調整区域",) + _r_kubun(),
+        ("用途地域",) + _r_youto(),
+        ("農地区分（青地/白地）",) + _r_nochi(),
+        ("ハザード：洪水",) + _r_flood(),
+        ("ハザード：津波・高潮",) + _r_tsuhig(),
+        ("ハザード：土砂",) + _r_dosha(),
+        ("自然公園・地すべり・急傾斜",) + _r_kuiki(),
+        ("標高・傾斜", (f"標高 {elev}m ／ 傾斜 {slp}°" if elev is not None else "取得できず"), False),
+        ("最寄り道路／建物",
+         "道路 " + ((road["cls"] + " " + str(road["d"]) + "m") if road else "—") + " ／ 建物 " + (str(bldg) + "m" if bldg is not None else "—"), False),
+        ("海岸距離（重塩害）", (f"{_coast}m" if _coast is not None else "海岸なし（内陸）"), (_coast is not None and _coast < 500)),
+    ]
+    _ov = []
+    if _r_flood()[1]:
+        _ov.append(("洪水", HAZ["洪水浸水(想定最大規模)"], False, False))
+    if _r_tsuhig()[1]:
+        if (isinstance(tsu, dict) and tsu.get("hit")) or haz.get("津波浸水想定"):
+            _ov.append(("津波", HAZ["津波浸水想定"], False, False))
+        if (isinstance(hig, dict) and hig.get("hit")) or haz.get("高潮浸水想定"):
+            _ov.append(("高潮", HAZ["高潮浸水想定"], False, False))
+    if _r_dosha()[1]:
+        for k in ["土砂(土石流)", "土砂(急傾斜)", "土砂(地すべり)"]:
+            if haz.get(k):
+                _ov.append(("土砂", HAZ[k], False, False)); break
+    if _r_kubun()[1] and _zoning:
+        _ov.append(("市街化調整", None, True, False))
+    if a12.get("status") in ("青地", "白地") and _farm:
+        _ov.append(("農地", None, False, True))
+    st.session_state["report"] = {
+        "rows": _rows, "subtitle": (addr_in or addr or f"{lat:.6f}, {lon:.6f}"),
+        "lat": lat, "lon": lon, "poly": _poly_ll,
+        "overlays": _ov[:4], "zoning": _zoning, "farm": _farm,
+    }
+    st.session_state.pop("pptx_bytes", None)
+
+
+# ========== PowerPoint出力ボタン ==========
+if st.session_state.get("report"):
+    st.divider()
+    st.subheader("PowerPoint出力（Sustechテンプレ）")
+    if not _os.path.exists(TEMPLATE_PATH):
+        st.info("テンプレート dd_template.pptx をGitHubリポジトリ（app.pyと同じ場所）に追加すると、この地点の調査結果を1枚もの資料として出力できます。")
+    else:
+        if st.button("📊 PowerPointを生成", type="primary"):
+            rep = st.session_state["report"]
+            with st.spinner("スライド生成中（航空写真・該当地図を取得）…"):
+                try:
+                    imgs = [compose_map(rep["lat"], rep["lon"], poly=rep["poly"], label="航空写真")]
+                    for (label, ov_url, use_z, use_f) in rep["overlays"]:
+                        imgs.append(compose_map(rep["lat"], rep["lon"], overlay_url=ov_url,
+                                    zoning=rep["zoning"] if use_z else None,
+                                    farm=rep["farm"] if use_f else None,
+                                    poly=rep["poly"], label=label))
+                    st.session_state["pptx_bytes"] = build_report_pptx(rep["rows"], rep["subtitle"], imgs)
+                except Exception as _ex:
+                    st.error(f"生成に失敗しました: {_ex}")
+        if st.session_state.get("pptx_bytes"):
+            st.download_button("⬇ PPTXをダウンロード", st.session_state["pptx_bytes"],
+                file_name="用地調査結果.pptx",
+                mime="application/vnd.openxmlformats-officedocument.presentationml.presentation")
+            st.caption("該当項目は赤字太字、右に航空写真＋該当した地図（ハザード・市街化調整・農地）を掲載。ロゴ・タイトル書式はテンプレ準拠。")

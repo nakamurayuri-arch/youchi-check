@@ -3,3 +3,4 @@ requests
 Pillow
 pyshp
 mapbox_vector_tile
+python-pptx
