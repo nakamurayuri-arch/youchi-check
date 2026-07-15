@@ -551,15 +551,46 @@ NEIGHBORS = {
  "13":["11","12","14","19"], "14":["13","11","19","22"],
 }
 
+def _pref_from_latlon(lat, lon):
+    """緯度経度→都道府県名（逆ジオコード）。住所が無くても県を特定するため。"""
+    try:
+        js = requests.get("https://msearch.gsi.go.jp/address-search/AddressSearch",
+                          params={"q": f"{lat},{lon}"}, headers=UA, timeout=T).json()
+    except Exception:
+        js = None
+    # GSIの緯度経度→住所は別APIなのでreverseを使う
+    try:
+        j = requests.get("https://nominatim.openstreetmap.org/reverse",
+                         params={"format": "json", "accept-language": "ja", "lat": lat, "lon": lon},
+                         headers=UA, timeout=T).json()
+        for name in PREF_CODE:
+            if name in (j.get("display_name") or "") or name in str(j.get("address", {})):
+                return name
+    except Exception:
+        pass
+    return None
+
 def _pref_candidates(lat, lon, addr):
     cands = []
+    seen = set()
+    def add(code):
+        if code and code not in seen:
+            nm = [k for k, v in PREF_CODE.items() if v == code]
+            if nm:
+                seen.add(code); cands.append((code, nm[0]))
     pc = pref_code_from_addr(addr)
     if pc:
-        cands.append(pc)
+        add(pc[0])
         for nb in NEIGHBORS.get(pc[0], []):
-            nm = [k for k, v in PREF_CODE.items() if v == nb]
-            if nm:
-                cands.append((nb, nm[0]))
+            add(nb)
+    # 住所で取れない/不足なら、緯度経度の逆ジオコードで県を特定
+    if not cands:
+        nm = _pref_from_latlon(lat, lon)
+        if nm:
+            code = PREF_CODE[nm]
+            add(code)
+            for nb in NEIGHBORS.get(code, []):
+                add(nb)
     return cands
 
 def _rings_from_shape(shape):
@@ -1017,7 +1048,7 @@ if st.button("▶ チェックする", type="primary"):
 
     st.subheader("農地（青地/白地：国土数値情報A12・2015年度）")
     try:
-        a12 = a12_status(lat, lon, addr)
+        a12 = a12_status(lat, lon, ((addr_in or "") + " " + (addr or "")).strip())
     except Exception as e:
         a12 = {"err": str(e)}
     if a12.get("err"):
