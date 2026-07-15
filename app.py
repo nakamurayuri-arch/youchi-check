@@ -927,12 +927,16 @@ def build_report_pptx(rows, subtitle, images):
     from pptx.dml.color import RGBColor
     from pptx.text.text import _Paragraph
     RED = RGBColor(0xC0, 0x00, 0x00)
+    from pptx.util import Pt as _Pt
+    from pptx.oxml.ns import qn as _qn
+    FS = _Pt(10)
     def setc(cell, text, bold=False, red=False):
         tf = cell.text_frame; lines = str(text).split("\n")
+        cell.margin_top = _Pt(1); cell.margin_bottom = _Pt(1)
         for _pp in tf.paragraphs[1:]:
             _pp._p.getparent().remove(_pp._p)
         p0 = tf.paragraphs[0]; r0 = p0.runs[0] if p0.runs else p0.add_run()
-        r0.text = lines[0]; r0.font.bold = bold
+        r0.text = lines[0]; r0.font.bold = bold; r0.font.size = FS
         if red: r0.font.color.rgb = RED
         for r in p0.runs[1:]:
             r._r.getparent().remove(r._r)
@@ -941,7 +945,7 @@ def build_report_pptx(rows, subtitle, images):
             pp = _Paragraph(newp, p0._parent)
             for rr in pp.runs[1:]:
                 rr._r.getparent().remove(rr._r)
-            pp.runs[0].text = extra; pp.runs[0].font.bold = bold
+            pp.runs[0].text = extra; pp.runs[0].font.bold = bold; pp.runs[0].font.size = FS
             if red: pp.runs[0].font.color.rgb = RED
     prs = Presentation(TEMPLATE_PATH); s = prs.slides[0]
     for sh in s.shapes:
@@ -950,15 +954,21 @@ def build_report_pptx(rows, subtitle, images):
         if sh.name == "コンテンツ プレースホルダー 4" and sh.has_text_frame:
             tf = sh.text_frame
             (tf.paragraphs[0].runs[0] if tf.paragraphs[0].runs else tf.paragraphs[0].add_run()).text = subtitle
-    tbl = [sh for sh in s.shapes if sh.has_table][0].table
-    tbl.columns[0].width = Inches(2.5); tbl.columns[1].width = Inches(3.0)
-    nd = len(tbl.rows) - 1
+    _tblshape = [sh for sh in s.shapes if sh.has_table][0]
+    _tblshape.top = Inches(1.55)
+    tbl = _tblshape.table
+    tbl.columns[0].width = Inches(2.4); tbl.columns[1].width = Inches(3.1)
+    need = len(rows) + 1  # +ヘッダ
+    _trs = tbl._tbl.findall(_qn("a:tr"))
+    while len(tbl._tbl.findall(_qn("a:tr"))) < need:
+        tbl._tbl.append(_copy.deepcopy(_trs[-1]))
+    while len(tbl._tbl.findall(_qn("a:tr"))) > need:
+        _last = tbl._tbl.findall(_qn("a:tr"))[-1]; _last.getparent().remove(_last)
     for i, (k, v, hit) in enumerate(rows):
-        if i + 1 <= nd:
-            setc(tbl.cell(i + 1, 0), k, bold=True)
-            setc(tbl.cell(i + 1, 1), v, bold=bool(hit), red=bool(hit))
-    for ri in range(nd, len(rows), -1):
-        tr = tbl.rows[ri]._tr; tr.getparent().remove(tr)
+        setc(tbl.cell(i + 1, 0), k, bold=True)
+        setc(tbl.cell(i + 1, 1), v, bold=bool(hit), red=bool(hit))
+    for r in tbl.rows:
+        r.height = Inches(0.2)
     remove = {"図 31", "図 9", "図 13", "Rectangle 15", "Straight Connector 17",
               "Straight Connector 18", "5-Point Star 23", "矢印: 下 21", "正方形/長方形 22", "矢印: 下 24"}
     for sh in list(s.shapes):
@@ -1268,8 +1278,15 @@ if st.button("▶ チェックする", type="primary"):
         return ("該当：" + "・".join(hits) if hits else "非該当", bool(hits))
     _coast = cd.get("dist") if isinstance(cd, dict) else None
     _rows = [
+        ("案件名", "〇〇蓄電所", False),
         ("所在地", (addr_in or addr or ""), False),
         ("緯度経度", f"{lat:.6f}, {lon:.6f}", False),
+        ("電力エリア", "〇〇エリア", False),
+        ("機器構成", "", False),
+        ("連系予定日", "20〇〇年〇月（〇年〇月負担金支払済）", False),
+        ("取得価格", "〇〇億円(税込) ※負担金込み", False),
+        ("地目", "", False),
+        ("アグリゲーター", "Sustech", False),
         ("市街化調整区域",) + _r_kubun(),
         ("用途地域",) + _r_youto(),
         ("農地区分（青地/白地）",) + _r_nochi(),
