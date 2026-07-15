@@ -726,16 +726,19 @@ if st.button("▶ チェックする", type="primary"):
             line = _line_str(k, tsu, "XKT028")
         elif k.startswith("高潮"):
             line = _line_str(k, hig, "XKT027")
-        if line:
-            st.write(line); continue
-        # フォールバック（キー無し等）：タイルの該当/非該当のみ
-        if v is True:
-            extra = "（深さは公式マップで確認）" if k.startswith(("洪水", "津波", "高潮")) else ""
-            st.write(f"- {k}： **⚠ 該当**{extra}")
-        elif v is False:
-            st.write(f"- {k}： **○ 非該当**")
-        else:
-            st.write(f"- {k}： 要確認")
+        if line is None:
+            if v is True:
+                extra = "（深さは公式マップで確認）" if k.startswith(("洪水", "津波", "高潮")) else ""
+                line = f"- {k}： **⚠ 該当**{extra}"
+            elif v is False:
+                line = f"- {k}： **○ 非該当**"
+            else:
+                line = f"- {k}： 要確認"
+        _lsname = ("kouzui" if k.startswith("洪水") else
+                   "tsunami" if k.startswith("津波") else
+                   "takashio" if k.startswith("高潮") else "dosha")
+        _mu = f"https://disaportal.gsi.go.jp/maps/index.html?ll={lat}%2C{lon}&z=17&base=pale&layerset={_lsname}"
+        st.write(line + f"　[🗺 地図]({_mu})")
     if isinstance(fl, dict) and fl.get("hit"):
         with st.expander("洪水の内訳（XKT026が返した該当ポリゴン）"):
             st.json({"tile_features": fl.get("tile_features"), "matches": fl.get("matches")})
@@ -765,6 +768,7 @@ if st.button("▶ チェックする", type="primary"):
                         st.json(r.get("all_props", []))
                 else:
                     st.write("- 市街化調整区域： **○ 非該当**（都市計画区域外の可能性）")
+                st.caption(f"区域区分の判定は本アプリ（reinfolib XKT001）。位置確認：[Googleマップ](https://www.google.com/maps?q={lat},{lon})")
                 continue
             if r.get("err"):
                 st.write(f"- {name}： 取得エラー（{r['err']}）")
@@ -809,6 +813,7 @@ if st.button("▶ チェックする", type="primary"):
     with st.expander("A12 判定の診断"):
         st.json(a12.get("diag") or {"注意": "診断情報なし"})
     st.caption("※A12は2015年度データ。農用地区域（青地）は参考表示で精度保証なし。第何種は農業委員会、地目は登記簿で確認。")
+    st.caption(f"農地の地目・地番・青地/白地の確認：[農地ナビ](https://map.maff.go.jp/)（地番で検索）／位置：[Googleマップ](https://www.google.com/maps?q={lat},{lon})")
 
     st.subheader("その他（データ無し→リンク確認）")
     st.markdown(
