@@ -767,7 +767,7 @@ if st.button("▶ チェックする", type="primary"):
                 if REINFOLIB_KEY:
                     ff = face_flood(_pts)
                     if ff.get("max_rank"):
-                        st.write(f"- 洪水（面）： **{ff['cover']}**（区画内 最大 {ff['max_depth']}／{ff['n_hit']}/{ff['n']}点該当）　[🗺 地図](https://disaportal.gsi.go.jp/maps/index.html?ll={lat},{lon}&z=17&base=pale&layerset=kouzui&_p={int(lat*1e6)}_{int(lon*1e6)})")
+                        st.markdown(f"- 洪水（面）： **{ff['cover']}**（区画内 最大 {ff['max_depth']}／{ff['n_hit']}/{ff['n']}点該当）　<a href=\"https://disaportal.gsi.go.jp/maps/index.html?ll={lat},{lon}&z=17&base=pale&layerset=kouzui&_p={int(lat*1e6)}_{int(lon*1e6)}\" target=\"_blank\" rel=\"noopener\">🗺 地図（別タブ）</a>", unsafe_allow_html=True)
                     else:
                         st.write(f"- 洪水（面）： **{ff['cover']}**")
                     fk = face_kubun(_pts)
@@ -848,11 +848,11 @@ if st.button("▶ チェックする", type="primary"):
                    "tsunami" if k.startswith("津波") else
                    "takashio" if k.startswith("高潮") else "dosha")
         _mu = f"https://disaportal.gsi.go.jp/maps/index.html?ll={lat},{lon}&z=17&base=pale&layerset={_lsname}&_p={int(lat*1e6)}_{int(lon*1e6)}"
-        st.write(line + f"　[🗺 地図]({_mu})")
+        st.markdown(line + f"　<a href=\"{_mu}\" target=\"_blank\" rel=\"noopener\">🗺 地図（別タブ）</a>", unsafe_allow_html=True)
     if isinstance(fl, dict) and fl.get("hit"):
         with st.expander("洪水の内訳（XKT026が返した該当ポリゴン）"):
             st.json({"tile_features": fl.get("tile_features"), "matches": fl.get("matches")})
-    st.caption(f"洪水深の権威確認：[重ねるハザードマップ（想定最大規模）で開く](https://disaportal.gsi.go.jp/maps/index.html?ll={lat},{lon}&z=17&base=pale&layerset=kouzui&_p={int(lat*1e6)}_{int(lon*1e6)})")
+    st.markdown(f"洪水深の権威確認：<a href=\"https://disaportal.gsi.go.jp/maps/index.html?ll={lat},{lon}&z=17&base=pale&layerset=kouzui&_p={int(lat*1e6)}_{int(lon*1e6)}\" target=\"_blank\" rel=\"noopener\">重ねるハザードマップ（想定最大規模）で開く（別タブ）</a>", unsafe_allow_html=True)
     for nm, res in [("洪水", fl), ("津波", tsu), ("高潮", hig)]:
         if isinstance(res, dict) and res.get("err"):
             st.caption(f"（{nm}の属性取得でエラー: {res['err']}。タイル判定にフォールバック）")
