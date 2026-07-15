@@ -6,6 +6,8 @@
 import re, math, time, os
 from io import BytesIO
 import requests
+import json
+import streamlit.components.v1 as components
 import streamlit as st
 
 UA = {"User-Agent": "youchi-check/1.0"}
@@ -112,6 +114,42 @@ def kml_centroid(coords):
     if not coords: return None
     xs=[c[0] for c in coords]; ys=[c[1] for c in coords]
     return (sum(ys)/len(ys), sum(xs)/len(xs))  # (lat, lon)
+
+LEAFLET_TEMPLATE = """
+<!DOCTYPE html><html><head>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<style>#map{height:430px;border-radius:8px;}</style></head>
+<body><div id="map"></div><script>
+var lat=__LAT__, lon=__LON__, zoom=__ZOOM__, poly=__POLY__;
+var map=L.map('map').setView([lat,lon],zoom);
+var base=L.tileLayer('https://cyberjapandata.gsi.go.jp/xyz/pale/{z}/{x}/{y}.png',
+  {attribution:'国土地理院',maxZoom:18}).addTo(map);
+function hz(u){return L.tileLayer('https://disaportaldata.gsi.go.jp/raster/'+u+'/{z}/{x}/{y}.png',{opacity:0.6,maxZoom:17});}
+var ov={
+ '洪水(想定最大規模)':hz('01_flood_l2_shinsuishin'),
+ '津波':hz('04_tsunami_newlegend_data'),
+ '高潮':hz('03_hightide_l2_shinsuishin_data'),
+ '土砂(土石流)':hz('05_dosekiryukeikaikuiki_data'),
+ '土砂(急傾斜)':hz('05_kyukeishakeikaikuiki_data'),
+ '土砂(地すべり)':hz('05_jisuberikeikaikuiki_data')
+};
+ov['洪水(想定最大規模)'].addTo(map);
+L.control.layers(null,ov,{collapsed:false}).addTo(map);
+L.marker([lat,lon]).addTo(map);
+if(poly){L.polygon(poly,{color:'#CB0F4B',weight:2,fillOpacity:0.08}).addTo(map);}
+</script></body></html>
+"""
+
+def leaflet_hazard_html(lat, lon, poly_lonlat=None, zoom=16):
+    poly_js = "null"
+    if poly_lonlat:
+        poly_js = json.dumps([[y, x] for (x, y) in poly_lonlat])
+    return (LEAFLET_TEMPLATE
+            .replace("__LAT__", repr(float(lat)))
+            .replace("__LON__", repr(float(lon)))
+            .replace("__ZOOM__", str(int(zoom)))
+            .replace("__POLY__", poly_js))
 
 def sample_points(coords, grid=3):
     """区画ポリゴン(coords=[(lon,lat)]) → 頂点+辺中点+重心+内部グリッド点。"""
@@ -808,6 +846,16 @@ if st.button("▶ チェックする", type="primary"):
               "傾斜(推定)": f"{slp}°" if slp is not None else "取得できず"})
 
     st.subheader("ハザード")
+    _poly_ll = None
+    if kml_feats:
+        _pf = next((f for f in kml_feats if f["type"] == "polygon"), None)
+        if _pf:
+            _poly_ll = _pf["coords"]
+    try:
+        components.html(leaflet_hazard_html(lat, lon, _poly_ll, zoom=16), height=450)
+        st.caption("アプリ内地図（右上で洪水/津波/高潮/土砂を切替）。外部サイトを開かないため位置ずれは起きません。出典：ハザードマップポータルサイト／国土地理院。")
+    except Exception as _le:
+        st.caption(f"（地図の埋め込みをスキップ: {_le}）")
     fl  = reinfolib_flood(lat, lon) if REINFOLIB_KEY else None
     tsu = reinfolib_inundation("XKT028", lat, lon, z=14) if REINFOLIB_KEY else None
     hig = reinfolib_inundation("XKT027", lat, lon, z=14) if REINFOLIB_KEY else None
