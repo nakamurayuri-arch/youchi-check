@@ -843,6 +843,7 @@ if not REINFOLIB_KEY:
 # ========== PowerPoint出力（テンプレ＋合成画像） ==========
 import os as _os
 GSI_PHOTO = "https://cyberjapandata.gsi.go.jp/xyz/seamlessphoto/{z}/{x}/{y}.jpg"
+GSI_PALE = "https://cyberjapandata.gsi.go.jp/xyz/pale/{z}/{x}/{y}.png"
 TEMPLATE_PATH = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "dd_template.pptx")
 
 def _fetch_img(url, rgba=False):
@@ -856,21 +857,25 @@ def _fetch_img(url, rgba=False):
     except Exception:
         return None
 
-def _draw_geom_on(draw, geom, topx, fill):
+def _draw_geom_on(draw, geom, topx, fill, outline=None):
     t = geom.get("type"); c = geom.get("coordinates")
     polys = [c] if t == "Polygon" else (c if t == "MultiPolygon" else [])
     for poly in polys:
         if poly and len(poly[0]) >= 3:
-            draw.polygon([topx(x, y) for (x, y) in poly[0]], fill=fill)
+            pts = [topx(x, y) for (x, y) in poly[0]]
+            draw.polygon(pts, fill=fill)
+            if outline:
+                draw.line(pts + [pts[0]], fill=outline, width=1)
 
-def compose_map(lat, lon, z=16, ntiles=3, overlay_url=None, zoning=None, farm=None, poly=None, label=None):
+def compose_map(lat, lon, z=16, ntiles=3, overlay_url=None, zoning=None, farm=None, poly=None, label=None, base="photo"):
     from PIL import Image, ImageDraw
     xf, yf = deg2tile(lat, lon, z); xc, yc = int(xf), int(yf); half = ntiles // 2
     W = H = ntiles * 256
     canvas = Image.new("RGB", (W, H), (210, 210, 210))
     for dx in range(-half, half + 1):
         for dy in range(-half, half + 1):
-            t = _fetch_img(GSI_PHOTO.format(z=z, x=xc + dx, y=yc + dy))
+            _burl = GSI_PHOTO if base == "photo" else GSI_PALE
+            t = _fetch_img(_burl.format(z=z, x=xc + dx, y=yc + dy))
             if t:
                 canvas.paste(t.resize((256, 256)), ((dx + half) * 256, (dy + half) * 256))
     if overlay_url:
@@ -881,6 +886,8 @@ def compose_map(lat, lon, z=16, ntiles=3, overlay_url=None, zoning=None, farm=No
                 if t:
                     t = t.resize((256, 256))
                     layer.paste(t, ((dx + half) * 256, (dy + half) * 256), t)
+        _a = layer.getchannel("A").point(lambda a: int(a * 0.6))
+        layer.putalpha(_a)
         canvas = Image.alpha_composite(canvas.convert("RGBA"), layer).convert("RGB")
     draw = ImageDraw.Draw(canvas, "RGBA")
     def topx(lo, la):
@@ -888,13 +895,21 @@ def compose_map(lat, lon, z=16, ntiles=3, overlay_url=None, zoning=None, farm=No
     if zoning:
         for f in zoning.get("features", []):
             cc = (f.get("properties", {}).get("area_classification_ja") or "")
-            col = (203, 15, 75, 110) if "調整" in cc else ((46, 109, 138, 100) if "市街化区域" in cc else (150, 150, 150, 70))
-            _draw_geom_on(draw, f.get("geometry", {}), topx, col)
+            if "調整" in cc:
+                fill, line = (203, 15, 75, 64), (203, 15, 75, 255)
+            elif "市街化区域" in cc:
+                fill, line = (46, 109, 138, 64), (46, 109, 138, 255)
+            else:
+                fill, line = (150, 150, 150, 48), (150, 150, 150, 200)
+            _draw_geom_on(draw, f.get("geometry", {}), topx, fill, outline=line)
     if farm:
         for f in farm.get("features", []):
             ln = f.get("properties", {}).get("LAYER_NO")
-            col = (31, 138, 76, 110) if ln == 6 else (200, 160, 46, 110)
-            _draw_geom_on(draw, f.get("geometry", {}), topx, col)
+            if ln == 6:
+                fill, line = (31, 138, 76, 64), (31, 138, 76, 255)
+            else:
+                fill, line = (200, 160, 46, 64), (200, 160, 46, 255)
+            _draw_geom_on(draw, f.get("geometry", {}), topx, fill, outline=line)
     if poly:
         pts = [topx(lo, la) for (lo, la) in poly]
         draw.line(pts + [pts[0]], fill=(203, 15, 75, 255), width=4)
@@ -1302,12 +1317,12 @@ if st.session_state.get("report"):
             rep = st.session_state["report"]
             with st.spinner("スライド生成中（航空写真・該当地図を取得）…"):
                 try:
-                    imgs = [compose_map(rep["lat"], rep["lon"], poly=rep["poly"], label="航空写真")]
+                    imgs = [compose_map(rep["lat"], rep["lon"], poly=rep["poly"], label="航空写真", base="photo")]
                     for (label, ov_url, use_z, use_f) in rep["overlays"]:
                         imgs.append(compose_map(rep["lat"], rep["lon"], overlay_url=ov_url,
                                     zoning=rep["zoning"] if use_z else None,
                                     farm=rep["farm"] if use_f else None,
-                                    poly=rep["poly"], label=label))
+                                    poly=rep["poly"], label=label, base="pale"))
                     st.session_state["pptx_bytes"] = build_report_pptx(rep["rows"], rep["subtitle"], imgs)
                 except Exception as _ex:
                     st.error(f"生成に失敗しました: {_ex}")
